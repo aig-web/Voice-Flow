@@ -1,13 +1,14 @@
 {
-  "name": "voice-flow",
-  "version": "0.1.0",
-  "description": "Voice-Flow - AI-powered voice transcription desktop app",
+  "name": "stop-typing",
+  "version": "2.0.0",
+  "description": "Stop Typing - AI-powered voice transcription desktop app",
   "private": true,
   "scripts": {
     "dev": "concurrently --names \"BACKEND,FRONTEND,ELECTRON\" -c \"yellow,cyan,magenta\" \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:electron\"",
+    "dev:mac": "concurrently --names \"BACKEND,FRONTEND,ELECTRON\" -c \"yellow,cyan,magenta\" \"npm run dev:backend:mac\" \"npm run dev:frontend\" \"npm run dev:electron\"",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:backend": "cd backend && .\\venv\\Scripts\\python.exe -m uvicorn main:app --reload",
-    "dev:backend:unix": "cd backend && source venv/bin/activate && uvicorn main:app --reload",
+    "dev:backend:mac": "cd backend && ./venv/bin/python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000",
     "dev:electron": "wait-on http://localhost:5173 && cd app && npm run dev",
     "build:frontend": "cd frontend && npm run build",
     "build:electron": "cd app && npm run build",
@@ -18,17 +19,20 @@
     "install:all": "npm install && npm run install:frontend && npm run install:electron",
     "lint": "cd frontend && npm run lint",
     "typecheck": "cd frontend && npm run typecheck",
-    "build:prod": "echo 'Building Frontend...' && cd frontend && npm run build && cd .. && echo 'Building Backend (Voice Engine)...' && cd backend && pyinstaller --name voice-engine --onefile --noconsole main.py && cd .. && echo 'Building Installer...' && cd app && npm run dist"
+    "dist:win": "cd app && npm run dist:win",
+    "dist:mac": "cd app && npm run dist:mac"
   },
   "keywords": [
     "voice",
     "transcription",
-    "whisper",
+    "speech-to-text",
     "react",
     "fastapi",
-    "electron"
+    "electron",
+    "nemo",
+    "parakeet"
   ],
-  "author": "",
+  "author": "Yash",
   "license": "MIT",
   "devDependencies": {
     "concurrently": "^9.1.2",

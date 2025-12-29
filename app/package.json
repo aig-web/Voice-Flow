@@ -7,12 +7,17 @@
   "license": "MIT",
   "scripts": {
     "build": "tsc",
-    "dev": "tsc && powershell -ExecutionPolicy Bypass -File run-electron.ps1",
-    "start": "powershell -ExecutionPolicy Bypass -File run-electron.ps1",
+    "dev": "tsc && node scripts/run-electron.js",
+    "dev:win": "tsc && powershell -ExecutionPolicy Bypass -File run-electron.ps1",
+    "dev:mac": "tsc && bash run-electron.sh",
+    "start": "node scripts/run-electron.js",
+    "start:win": "powershell -ExecutionPolicy Bypass -File run-electron.ps1",
+    "start:mac": "bash run-electron.sh",
     "watch": "tsc --watch",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "dist:win": "electron-builder --win"
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
