@@ -76,47 +76,46 @@ const BROWSER_URL_PATTERNS: Record<string, { context: AppContextType; tone: 'for
 
 /**
  * Get the currently active window information on Windows
+ * Uses Base64-encoded PowerShell command to avoid escaping issues
  */
 export async function getActiveWindow(): Promise<ActiveWindowInfo> {
   try {
-    // PowerShell script to get active window info
+    // PowerShell script to get active window - will be Base64 encoded to avoid escaping issues
     const psScript = `
-      Add-Type @"
-        using System;
-        using System.Runtime.InteropServices;
-        using System.Text;
-        public class Win32 {
-          [DllImport("user32.dll")]
-          public static extern IntPtr GetForegroundWindow();
-
-          [DllImport("user32.dll")]
-          public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
-
-          [DllImport("user32.dll")]
-          public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-        }
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class Win32 {
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+}
 "@
-      $hwnd = [Win32]::GetForegroundWindow()
-      $title = New-Object System.Text.StringBuilder 256
-      [Win32]::GetWindowText($hwnd, $title, 256) | Out-Null
-      $processId = 0
-      [Win32]::GetWindowThreadProcessId($hwnd, [ref]$processId) | Out-Null
-      $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+$hwnd = [Win32]::GetForegroundWindow()
+$title = New-Object System.Text.StringBuilder 256
+[void][Win32]::GetWindowText($hwnd, $title, 256)
+$pid = [uint32]0
+[void][Win32]::GetWindowThreadProcessId($hwnd, [ref]$pid)
+$proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
+$name = if ($proc) { $proc.ProcessName } else { "unknown" }
+Write-Output "$name|||$($title.ToString())"
+`
 
-      @{
-        ProcessName = if ($process) { $process.ProcessName } else { "unknown" }
-        WindowTitle = $title.ToString()
-      } | ConvertTo-Json
-    `
+    // Encode the script as Base64 (UTF-16LE for PowerShell -EncodedCommand)
+    const encodedCommand = Buffer.from(psScript, 'utf16le').toString('base64')
 
     const { stdout } = await execAsync(
-      `powershell -NoProfile -ExecutionPolicy Bypass -Command "${psScript.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`,
-      { timeout: 2000 }
+      `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`,
+      { timeout: 3000 }
     )
 
-    const result = JSON.parse(stdout.trim())
-    const processName = (result.ProcessName || 'unknown').toLowerCase()
-    const windowTitle = result.WindowTitle || ''
+    const parts = stdout.trim().split('|||')
+    const processName = (parts[0] || 'unknown').toLowerCase()
+    const windowTitle = parts[1] || ''
 
     // Determine context and tone
     const classification = classifyApp(processName, windowTitle)

@@ -16,6 +16,7 @@ from routers.transcription import router as transcription_router
 from routers.settings import router as settings_router
 from routers.export import router as export_router
 from routers.snippets import router as snippets_router
+from routers.modes import router as modes_router
 
 # Import services
 from services.transcription_service import transcription_service, DEVICE
@@ -23,7 +24,7 @@ from services.rate_limiter import rate_limiter, RateLimiter
 from services.dictionary_service import validate_dictionary_entry
 
 # Import database
-from database import Base, engine
+from database import Base, engine, SessionLocal, seed_default_modes
 
 # Import logging
 from logging_config import setup_logging, get_logger
@@ -43,6 +44,10 @@ async def lifespan(app: FastAPI):
     # Startup
     Base.metadata.create_all(bind=engine)
     print("[OK] Database initialized")
+
+    # Seed default modes
+    with SessionLocal() as db:
+        seed_default_modes(db)
 
     # Load ASR model
     try:
@@ -94,6 +99,7 @@ app.include_router(transcription_router)
 app.include_router(settings_router)
 app.include_router(export_router)
 app.include_router(snippets_router)
+app.include_router(modes_router)
 
 
 # ============== RUN SERVER ==============

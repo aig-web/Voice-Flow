@@ -37,6 +37,25 @@ interface Transcription {
   polished_text: string
   created_at: string
   duration?: number
+  mode_id?: number
+  mode_name?: string
+  has_audio?: boolean
+}
+
+interface Mode {
+  id: number
+  name: string
+  description?: string
+  system_prompt: string
+  tone: 'formal' | 'casual' | 'technical'
+  use_ai_polish: boolean
+  use_cleanup: boolean
+  use_dictionary: boolean
+  use_snippets: boolean
+  ai_model: string
+  auto_switch_apps: string[]
+  shortcut?: string
+  is_default: boolean
 }
 
 type ToastType = 'recording' | 'processing' | 'done' | 'error'
@@ -72,6 +91,15 @@ interface VoiceFlowAPI {
 
   /** Update the global recording hotkey */
   updateHotkey: (hotkey: string) => Promise<{ ok: boolean; error?: string }>
+
+  /** Get all modes */
+  getModes: () => Promise<ApiResult<Mode[]>>
+
+  /** Get active mode (optionally based on app) */
+  getActiveMode: (appName?: string) => Promise<ApiResult<Mode>>
+
+  /** Set active mode by ID */
+  setActiveMode: (modeId: number | null) => Promise<{ ok: boolean }>
 
   /** Send recording completion to main process */
   sendRecordingComplete: (text: string) => void
@@ -146,6 +174,12 @@ const voiceFlowAPI: VoiceFlowAPI = {
   getStats: () => ipcRenderer.invoke('vf:get-stats'),
 
   updateHotkey: (hotkey: string) => ipcRenderer.invoke('vf:update-hotkey', hotkey),
+
+  getModes: () => ipcRenderer.invoke('vf:get-modes'),
+
+  getActiveMode: (appName?: string) => ipcRenderer.invoke('vf:get-active-mode', appName),
+
+  setActiveMode: (modeId: number | null) => ipcRenderer.invoke('vf:set-active-mode', modeId),
 
   sendRecordingComplete: (text: string) => {
     ipcRenderer.send('vf:recording-complete', { text })

@@ -65,8 +65,9 @@ class StreamingTranscriber:
         self.accumulated_audio = np.array([], dtype=np.float32)
         self.last_transcription = ""
         self.confirmed_text = ""
+        self.confirmed_word_count = 0  # Track how many words are locked/confirmed
         self.word_counts = {}
-        self.min_word_count = 2
+        self.min_word_count = 4  # Increased from 2 - word must appear 4 times to be confirmed
 
     def reset(self):
         """Reset state for new recording"""
@@ -74,6 +75,7 @@ class StreamingTranscriber:
         self.accumulated_audio = np.array([], dtype=np.float32)
         self.last_transcription = ""
         self.confirmed_text = ""
+        self.confirmed_word_count = 0
         self.word_counts = {}
 
     def add_audio_chunk(self, audio_chunk: np.ndarray):
@@ -88,9 +90,16 @@ class StreamingTranscriber:
     def transcribe_current(self) -> tuple[str, str]:
         """
         Transcribe accumulated audio and return (partial_text, confirmed_text)
-        Uses word stabilization to only confirm words that appear consistently
+
+        LOCKED CONFIRMATION: Once words are confirmed (yellow), they NEVER change.
+        Only new words can be added to confirmed. Gray text shows current unstable words.
+
+        Returns:
+            partial_text: Current unconfirmed words being spoken (gray in UI)
+            confirmed_text: LOCKED confirmed words (yellow in UI) - never changes once set
         """
-        if len(self.accumulated_audio) < self.sample_rate * 0.5:
+        # Need at least 0.4 seconds of audio before showing anything
+        if len(self.accumulated_audio) < self.sample_rate * 0.4:
             return "", self.confirmed_text
 
         try:
@@ -109,26 +118,46 @@ class StreamingTranscriber:
                     text = self._extract_text(output[0])
                     text = self._clean_text(text)
 
-                    # Word stabilization
-                    current_words = text.split()
-                    confirmed_words = self.confirmed_text.split() if self.confirmed_text else []
-
-                    for i, word in enumerate(current_words):
-                        key = f"{i}:{word.lower()}"
-                        self.word_counts[key] = self.word_counts.get(key, 0) + 1
-
-                    new_confirmed = []
-                    for i, word in enumerate(current_words):
-                        key = f"{i}:{word.lower()}"
-                        if self.word_counts.get(key, 0) >= self.min_word_count:
-                            if i >= len(confirmed_words):
-                                new_confirmed.append(word)
-
-                    if new_confirmed:
-                        self.confirmed_text = " ".join(confirmed_words + new_confirmed)
+                    if not text.strip():
+                        return "", self.confirmed_text
 
                     self.last_transcription = text
-                    return text, self.confirmed_text
+                    current_words = text.split()
+
+                    # Track word appearances at each position (only for positions beyond confirmed)
+                    for i, word in enumerate(current_words):
+                        if i >= self.confirmed_word_count:  # Only track unconfirmed positions
+                            key = f"{i}:{word.lower()}"
+                            self.word_counts[key] = self.word_counts.get(key, 0) + 1
+
+                    # Find NEW words to confirm (starting from where we left off)
+                    # Once confirmed, words are LOCKED and never change
+                    new_confirmed = []
+                    for i in range(self.confirmed_word_count, len(current_words)):
+                        word = current_words[i]
+                        key = f"{i}:{word.lower()}"
+                        if self.word_counts.get(key, 0) >= self.min_word_count:
+                            new_confirmed.append(word)
+                        else:
+                            # Stop at first unstable word
+                            break
+
+                    # Add new confirmed words to the locked confirmed text
+                    if new_confirmed:
+                        if self.confirmed_text:
+                            self.confirmed_text += " " + " ".join(new_confirmed)
+                        else:
+                            self.confirmed_text = " ".join(new_confirmed)
+                        self.confirmed_word_count += len(new_confirmed)
+
+                    # Partial = everything AFTER the locked confirmed portion
+                    if self.confirmed_word_count < len(current_words):
+                        partial_words = current_words[self.confirmed_word_count:]
+                        partial_text = " ".join(partial_words)
+                    else:
+                        partial_text = ""
+
+                    return partial_text, self.confirmed_text
 
             finally:
                 try:
@@ -139,7 +168,8 @@ class StreamingTranscriber:
         except Exception as e:
             print(f"[STREAMING] Error: {e}")
 
-        return self.last_transcription, self.confirmed_text
+        # On error, return empty partial to avoid duplication
+        return "", self.confirmed_text
 
     def get_final_transcription(self) -> str:
         """Get final transcription when recording stops"""

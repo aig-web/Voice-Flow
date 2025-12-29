@@ -1,7 +1,7 @@
 {
-  "name": "voice-flow",
+  "name": "stop-typing",
   "version": "1.0.0",
-  "description": "Voice-Flow - Speech to Text Desktop App",
+  "description": "Stop Typing - Speech to Text Desktop App",
   "main": "dist/main.js",
   "author": "Yash",
   "license": "MIT",
@@ -22,8 +22,8 @@
     "typescript": "^5.7.2"
   },
   "build": {
-    "appId": "com.voiceflow.app",
-    "productName": "Voice-Flow",
+    "appId": "com.stoptyping.app",
+    "productName": "Stop Typing",
     "copyright": "Copyright © 2024 Yash",
     "directories": {
       "output": "release",
@@ -69,7 +69,7 @@
       "deleteAppDataOnUninstall": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Voice-Flow",
+      "shortcutName": "Stop Typing",
       "runAfterFinish": true
     },
     "mac": {

@@ -1,45 +1,60 @@
-@import url('https://fonts.googleapis.com/css2?family=Spline+Sans:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --primary: #f9f506;
-  --primary-hover: #e6e205;
-  --primary-content: #1c1c0d;
-  --background-light: #fcfcf8;
-  --surface-light: #f4f4f0;
-  --surface-hover: #ebebe6;
-  --surface-active: #e0e0da;
-  --text-main: #1c1c0d;
-  --text-muted: #6b6b60;
-  --text-body: #4a4a40;
-  --border-light: #e5e5e0;
+  --primary: #FFD93D;
+  --primary-dark: #FFB84C;
+  --primary-hover: #FFB84C;
+  --primary-content: #1A1A1A;
+  --background-light: #FAFAFA;
+  --surface-light: #FFFFFF;
+  --surface-hover: #F5F5F5;
+  --surface-active: #EEEEEE;
+  --text-main: #1A1A1A;
+  --text-muted: #6B7280;
+  --text-body: #4B5563;
+  --border-light: #E5E7EB;
 }
 
-/* Dark Theme */
+/* Dark Theme - Applied when .dark class is on html element */
+html.dark,
 .dark {
-  --primary: #f9f506;
-  --primary-hover: #fffb33;
-  --primary-content: #1c1c0d;
-  --background-light: #0f0f0f;
-  --surface-light: #1a1a1a;
-  --surface-hover: #252525;
-  --surface-active: #303030;
-  --text-main: #f5f5f5;
-  --text-muted: #a0a0a0;
-  --text-body: #d0d0d0;
-  --border-light: #2a2a2a;
+  --primary: #FFD93D;
+  --primary-dark: #FFB84C;
+  --primary-hover: #FFE066;
+  --primary-content: #1A1A1A;
+  --background-light: #0D0D0D;
+  --surface-light: #161616;
+  --surface-hover: #1F1F1F;
+  --surface-active: #2A2A2A;
+  --text-main: #FAFAFA;
+  --text-muted: #A1A1AA;
+  --text-body: #D4D4D8;
+  --border-light: #27272A;
+}
+
+/* Ensure dark mode inherits to all descendants */
+html.dark body,
+html.dark #root {
+  background: var(--background-light);
+  color: var(--text-main);
 }
 
 html, body {
   background: var(--background-light);
   color: var(--text-main);
   margin: 0;
-  font-family: 'Spline Sans', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Numbers font */
+.font-numbers {
+  font-family: 'DM Sans', system-ui, sans-serif;
 }
 
 /* Toast window - transparent background */
@@ -72,26 +87,21 @@ html:has(body[data-toast="true"]) body {
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--background-light);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
   background: var(--border-light);
-  border-radius: 4px;
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--surface-hover);
-}
-
-/* Dark mode scrollbar */
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: #404040;
+  background: var(--text-muted);
 }
 
 /* Animations */
@@ -138,6 +148,17 @@ html:has(body[data-toast="true"]) body {
   }
 }
 
+@keyframes pulse-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
 .animate-scale-in {
   animation: scale-in 0.2s ease-out;
 }
@@ -154,6 +175,10 @@ html:has(body[data-toast="true"]) body {
   animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
 }
 
+.animate-pulse-ring {
+  animation: pulse-ring 1.5s ease-out infinite;
+}
+
 /* Wave bars for recording */
 .wave-bar {
   background-color: var(--primary);
@@ -166,31 +191,31 @@ html:has(body[data-toast="true"]) body {
 .glass-panel {
   background: var(--surface-light);
   border: 1px solid var(--border-light);
-  box-shadow: 0 10px 40px -10px rgba(0,0,0,0.08);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.06);
 }
 
 .dark .glass-panel {
-  box-shadow: 0 10px 40px -10px rgba(0,0,0,0.4);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.3);
 }
 
 /* Card hover effect */
 .card-hover {
-  transition: all 0.3s ease;
+  transition: all 0.2s ease;
 }
 
 .card-hover:hover {
-  border-color: var(--primary);
-  box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  transform: translateY(-1px);
 }
 
 .dark .card-hover:hover {
   box-shadow: 0 4px 20px rgba(0,0,0,0.3);
 }
 
-/* Smooth transitions */
+/* Smooth transitions for theme */
 * {
-  transition-property: background-color, border-color, color, fill, stroke, opacity, box-shadow, transform;
-  transition-duration: 200ms;
+  transition-property: background-color, border-color;
+  transition-duration: 150ms;
   transition-timing-function: ease;
 }
 
@@ -199,27 +224,78 @@ html:has(body[data-toast="true"]) body {
   background-color: var(--primary);
   color: var(--primary-content);
   font-weight: 600;
-  border-radius: 9999px;
+  border-radius: 0.5rem;
   transition: all 0.2s ease;
 }
 
 .btn-primary:hover {
   background-color: var(--primary-hover);
-  box-shadow: 0 0 20px rgba(249, 245, 6, 0.3);
+  box-shadow: 0 4px 12px rgba(255, 217, 61, 0.3);
 }
 
 .btn-secondary {
   background-color: var(--surface-light);
   color: var(--text-main);
   font-weight: 500;
-  border-radius: 9999px;
+  border: 1px solid var(--border-light);
+  border-radius: 0.5rem;
   transition: all 0.2s ease;
 }
 
 .btn-secondary:hover {
   background-color: var(--surface-hover);
+  border-color: var(--text-muted);
+}
+
+/* Stat card trend indicator */
+.trend-up {
+  color: #10B981;
+}
+
+.trend-badge {
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
 }
 
 code {
   font-family: 'SF Mono', Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+/* Activity item icons */
+.activity-icon {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.activity-icon.document {
+  background-color: #DBEAFE;
+  color: #3B82F6;
+}
+
+.activity-icon.idea {
+  background-color: #FEF3C7;
+  color: #F59E0B;
+}
+
+.activity-icon.email {
+  background-color: #E5E7EB;
+  color: #6B7280;
+}
+
+.dark .activity-icon.document {
+  background-color: rgba(59, 130, 246, 0.2);
+}
+
+.dark .activity-icon.idea {
+  background-color: rgba(245, 158, 11, 0.2);
+}
+
+.dark .activity-icon.email {
+  background-color: rgba(107, 114, 128, 0.2);
 }

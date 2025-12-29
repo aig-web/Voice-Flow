@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useState, useRef, useCallback, useLayoutEffect } from 'react'
 
 type ToastType = 'recording' | 'processing' | 'done' | 'error'
 type RecordingMode = 'hold' | 'lock'
@@ -27,6 +27,9 @@ export function ToastWindow() {
   // Refs for timeout management
   const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const processingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  // Ref for auto-scroll
+  const textContainerRef = useRef<HTMLDivElement | null>(null)
 
   // Clear all timeouts
   const clearAllTimeouts = () => {
@@ -96,6 +99,13 @@ export function ToastWindow() {
     }
   }, [])
 
+  // Auto-scroll when text changes
+  useLayoutEffect(() => {
+    if (textContainerRef.current && (liveText || confirmedText)) {
+      textContainerRef.current.scrollTop = textContainerRef.current.scrollHeight
+    }
+  }, [liveText, confirmedText])
+
   // X button - Cancel recording, don't transcribe (only in lock mode)
   const handleCancel = () => {
     clearAllTimeouts()
@@ -118,34 +128,13 @@ export function ToastWindow() {
   if (!visible) return null
 
   return (
-    <div className="w-full h-full flex items-center justify-center">
+    <div className="w-full h-full flex items-center justify-center p-4">
       {/* Recording - Different UI for hold vs lock mode */}
       {type === 'recording' && (
-        <div className="flex flex-col items-center gap-2">
-          {/* Live transcription text */}
-          {(liveText || confirmedText) && (
-            <div
-              className="px-4 py-2 rounded-xl max-w-md text-center"
-              style={{
-                background: 'rgba(255, 255, 255, 0.95)',
-                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-                border: '1px solid #e5e5e0'
-              }}
-            >
-              <span style={{ fontSize: '14px', color: '#1c1c0d', fontWeight: 500 }}>
-                {confirmedText}
-              </span>
-              {liveText && (
-                <span style={{ fontSize: '14px', color: '#666', fontWeight: 400 }}>
-                  {confirmedText ? ' ' : ''}{liveText}
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Recording pill */}
+        <div className="flex flex-col items-center gap-3 max-w-lg w-full">
+          {/* Recording pill with waveform - ALWAYS visible at top */}
           <div
-            className="flex items-center gap-1 px-2 py-1.5 rounded-full"
+            className="flex items-center gap-1 px-3 py-2 rounded-full flex-shrink-0"
             style={{
               background: '#f9f506',
               boxShadow: '0 4px 20px rgba(249, 245, 6, 0.4)'
@@ -167,7 +156,7 @@ export function ToastWindow() {
               </button>
             )}
 
-            {/* Waveform bars - always show */}
+            {/* Waveform bars */}
             <div className="flex items-center gap-0.5 px-2">
               {[...Array(7)].map((_, i) => (
                 <div
@@ -198,6 +187,43 @@ export function ToastWindow() {
               </button>
             )}
           </div>
+
+          {/* Live transcription text - below waveform */}
+          {(liveText || confirmedText) && (
+            <div
+              ref={textContainerRef}
+              style={{
+                background: 'rgba(40, 40, 35, 0.95)',
+                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.25)',
+                borderRadius: '12px',
+                padding: '12px 16px',
+                maxHeight: '120px',
+                overflowY: 'auto',
+                width: '100%',
+                maxWidth: '420px',
+                scrollBehavior: 'smooth'
+              }}
+            >
+              <div style={{
+                fontSize: '14px',
+                lineHeight: '1.6',
+                wordBreak: 'break-word'
+              }}>
+                {/* Confirmed text in bright color - processed/final */}
+                {confirmedText && (
+                  <span style={{ color: '#f9f506', fontWeight: 500 }}>
+                    {confirmedText}
+                  </span>
+                )}
+                {/* Partial text in lighter gray - unconfirmed portion only */}
+                {liveText && (
+                  <span style={{ color: 'rgba(255, 255, 255, 0.6)', fontWeight: 400 }}>
+                    {confirmedText ? ' ' : ''}{liveText}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

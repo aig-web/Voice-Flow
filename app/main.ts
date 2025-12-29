@@ -29,6 +29,7 @@ import { existsSync } from 'fs'
 import { spawn, ChildProcess, execSync } from 'child_process'
 import { uIOhook, UiohookKey } from 'uiohook-napi'
 import { injectText } from './platform/injectText'
+import { captureFullContext, CapturedContext } from './platform/contextCapture'
 import WebSocket from 'ws'
 
 // ============== CONFIG ==============
@@ -57,6 +58,16 @@ const isDev = process.env.NODE_ENV === 'development'
 let ffmpegProcess: ChildProcess | null = null
 let wsConnection: WebSocket | null = null
 let wsToken: string | null = null
+let audioBuffer: Buffer[] = []  // Buffer audio before WebSocket is ready
+let wsReady = false  // Flag to track when WebSocket auth is complete
+let finalReceived = false  // Flag to track if we've received final transcription
+
+// Context capture globals
+let capturedContext: CapturedContext | null = null
+let currentModeId: number | null = null  // Active mode ID
+
+// Cached audio device (detected at startup for instant recording)
+let cachedAudioDevice: string | null = null
 
 // ============== LOGGING ==============
 function log(message: string, ...args: unknown[]) {
@@ -100,6 +111,45 @@ function getFFmpegPath(): string {
   return 'ffmpeg' // Fallback, will fail if not in PATH
 }
 
+// ============== Audio Device Detection (cached at startup) ==============
+function detectAudioDevice(): string | null {
+  const ffmpegPath = getFFmpegPath()
+  try {
+    // FFmpeg outputs device list to stderr, so we redirect 2>&1 and capture stdout
+    const output = execSync(`"${ffmpegPath}" -list_devices true -f dshow -i dummy 2>&1`, {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 5000
+    })
+    // This won't be reached - ffmpeg always exits with error for -i dummy
+    const audioMatch = output.match(/"([^"]+)" \(audio\)/i)
+    if (audioMatch) {
+      return audioMatch[1]
+    }
+  } catch (err) {
+    // execSync throws because ffmpeg exits with error (expected)
+    // The actual device list is in the error message or stdout
+    const error = err as { message?: string; stdout?: string; stderr?: string }
+    const output = error.message || error.stdout || error.stderr || ''
+    log(`FFmpeg device list output: ${output.substring(0, 500)}`)
+    const audioMatch = output.match(/"([^"]+)" \(audio\)/i)
+    if (audioMatch) {
+      return audioMatch[1]
+    }
+  }
+  return null
+}
+
+function initAudioDevice(): void {
+  log('Detecting audio device at startup...')
+  cachedAudioDevice = detectAudioDevice()
+  if (cachedAudioDevice) {
+    log(`Audio device cached: ${cachedAudioDevice}`)
+  } else {
+    logError('No audio device detected at startup!')
+  }
+}
+
 // ============== WebSocket Token ==============
 async function getWsToken(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -124,6 +174,30 @@ async function getWsToken(): Promise<string> {
 }
 
 // ============== AUDIO RECORDING (Main Process) ==============
+
+/**
+ * Send audio chunk - either buffer it or send directly based on WebSocket state
+ */
+function sendAudioChunk(chunk: Buffer) {
+  if (wsReady && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+    wsConnection.send(chunk)
+  } else {
+    audioBuffer.push(chunk)
+  }
+}
+
+/**
+ * Flush buffered audio to WebSocket once it's ready
+ */
+function flushAudioBuffer() {
+  if (audioBuffer.length > 0 && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+    log(`Flushing ${audioBuffer.length} buffered audio chunks`)
+    for (const chunk of audioBuffer) {
+      wsConnection.send(chunk)
+    }
+    audioBuffer = []
+  }
+}
 
 /**
  * Start audio recording using FFmpeg
@@ -260,83 +334,49 @@ async function startAudioCapturePowerShell(): Promise<boolean> {
 }
 
 /**
- * Fallback: Use first available audio device
+ * Start audio capture using CACHED device (instant start, no device detection delay)
  */
 async function startAudioCaptureDefault(): Promise<boolean> {
   const ffmpegPath = getFFmpegPath()
 
-  log('Trying default audio device...')
+  // Reset audio buffer for new recording
+  audioBuffer = []
+  wsReady = false
 
-  // Get list of devices first
-  try {
-    const listOutput = execSync(`"${ffmpegPath}" -list_devices true -f dshow -i dummy 2>&1`, {
-      encoding: 'utf8',
-      windowsHide: true
-    }).toString()
-
-    // Parse for audio devices
-    const audioMatch = listOutput.match(/"([^"]+)" \(audio\)/)
-    if (audioMatch) {
-      const deviceName = audioMatch[1]
-      log(`Found audio device: ${deviceName}`)
-
-      ffmpegProcess = spawn(ffmpegPath, [
-        '-f', 'dshow',
-        '-i', `audio=${deviceName}`,
-        '-ar', String(SAMPLE_RATE),
-        '-ac', '1',
-        '-f', 's16le',
-        '-acodec', 'pcm_s16le',
-        'pipe:1'
-      ], {
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
-
-      ffmpegProcess.stdout?.on('data', (chunk: Buffer) => {
-        if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-          wsConnection.send(chunk)
-        }
-      })
-
-      ffmpegProcess.stderr?.on('data', (data: Buffer) => {
-        // Suppress non-error output
-      })
-
-      return true
-    }
-  } catch (err) {
-    // execSync throws if ffmpeg exits with error (expected for -list_devices)
-    const output = (err as { stdout?: string }).stdout || ''
-    const audioMatch = output.match(/"([^"]+)" \(audio\)/i)
-    if (audioMatch) {
-      const deviceName = audioMatch[1]
-      log(`Found audio device from error output: ${deviceName}`)
-
-      ffmpegProcess = spawn(ffmpegPath, [
-        '-f', 'dshow',
-        '-i', `audio=${deviceName}`,
-        '-ar', String(SAMPLE_RATE),
-        '-ac', '1',
-        '-f', 's16le',
-        'pipe:1'
-      ], {
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
-
-      ffmpegProcess.stdout?.on('data', (chunk: Buffer) => {
-        if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-          wsConnection.send(chunk)
-        }
-      })
-
-      return true
+  // Use cached device for instant start (no execSync delay!)
+  if (!cachedAudioDevice) {
+    logError('No cached audio device - detecting now...')
+    cachedAudioDevice = detectAudioDevice()
+    if (!cachedAudioDevice) {
+      logError('No audio device found')
+      return false
     }
   }
 
-  logError('No audio device found')
-  return false
+  log(`Starting audio with cached device: ${cachedAudioDevice}`)
+
+  ffmpegProcess = spawn(ffmpegPath, [
+    '-f', 'dshow',
+    '-i', `audio=${cachedAudioDevice}`,
+    '-ar', String(SAMPLE_RATE),
+    '-ac', '1',
+    '-f', 's16le',
+    '-acodec', 'pcm_s16le',
+    'pipe:1'
+  ], {
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+
+  ffmpegProcess.stdout?.on('data', (chunk: Buffer) => {
+    sendAudioChunk(chunk)
+  })
+
+  ffmpegProcess.stderr?.on('data', () => {
+    // Suppress non-error output
+  })
+
+  return true
 }
 
 function stopAudioCapture() {
@@ -345,6 +385,8 @@ function stopAudioCapture() {
     ffmpegProcess.kill('SIGTERM')
     ffmpegProcess = null
   }
+  audioBuffer = []
+  wsReady = false
 }
 
 // ============== WEBSOCKET CONNECTION (Main Process) ==============
@@ -364,8 +406,19 @@ async function connectWebSocket(): Promise<boolean> {
         wsConnection!.send(JSON.stringify({
           type: 'auth',
           token: wsToken,
-          app_context: 'general'
+          app_context: capturedContext?.appContext || 'general',
+          app_name: capturedContext?.appName || null,
+          window_title: capturedContext?.windowTitle || null,
+          selected_text: capturedContext?.selectedText || null,
+          clipboard_text: capturedContext?.clipboardText || null,
+          mode_id: currentModeId
         }))
+        // Mark WebSocket as ready and flush any buffered audio
+        setTimeout(() => {
+          wsReady = true
+          log('WebSocket ready, flushing audio buffer...')
+          flushAudioBuffer()
+        }, 50)
         resolve(true)
       })
 
@@ -386,7 +439,13 @@ async function connectWebSocket(): Promise<boolean> {
 
           if (msg.type === 'final') {
             log('Received final transcription:', msg.text?.substring(0, 50))
-            handleFinalTranscription(msg.text || msg.raw || '')
+            finalReceived = true  // Mark that we got the final, so close handler doesn't show error
+            // Handle async but catch errors to ensure state is cleaned up
+            handleFinalTranscription(msg.text || msg.raw || '').catch(err => {
+              logError('handleFinalTranscription error:', err)
+              updateToast('error', 'Processing failed')
+              recordingState = 'idle'
+            })
           }
         } catch (e) {
           logError('WebSocket parse error:', e)
@@ -401,6 +460,18 @@ async function connectWebSocket(): Promise<boolean> {
       wsConnection.on('close', () => {
         log('WebSocket closed')
         wsConnection = null
+        wsReady = false
+
+        // If we're still processing when WS closes unexpectedly without final message
+        // give it a moment for any pending final message handler to complete
+        // But only show error if we didn't receive the final transcription
+        setTimeout(() => {
+          if (recordingState === 'processing' && !finalReceived) {
+            log('WebSocket closed while still processing without final - resetting state')
+            updateToast('error', 'Connection closed unexpectedly')
+            recordingState = 'idle'
+          }
+        }, 500)
       })
 
       // Timeout for connection
@@ -435,26 +506,32 @@ async function handleFinalTranscription(text: string) {
     wsConnection = null
   }
 
-  if (text && text.trim().length > 0) {
-    updateToast('processing', 'Injecting...')
+  try {
+    if (text && text.trim().length > 0) {
+      updateToast('processing', 'Injecting...')
 
-    const result = await injectText(text)
+      const result = await injectText(text)
 
-    if (result.ok) {
-      log('Text injected successfully')
-      updateToast('done', 'Done!')
-      recordingState = 'idle'
-      // Refresh dashboard after successful transcription
-      refreshDashboard()
+      if (result.ok) {
+        log('Text injected successfully')
+        updateToast('done', 'Done!')
+        // Refresh dashboard after successful transcription
+        refreshDashboard()
+      } else {
+        logError('Injection failed:', result.error)
+        updateToast('error', result.error || 'Injection failed')
+      }
     } else {
-      logError('Injection failed:', result.error)
-      updateToast('error', result.error || 'Injection failed')
-      recordingState = 'idle'
+      log('No text to inject')
+      updateToast('done', 'No speech detected')
     }
-  } else {
-    log('No text to inject')
-    updateToast('done', 'No speech detected')
+  } catch (err) {
+    logError('Error in handleFinalTranscription:', err)
+    updateToast('error', 'Processing failed')
+  } finally {
+    // Always reset state to idle when done
     recordingState = 'idle'
+    log('Recording state reset to idle')
   }
 }
 
@@ -484,26 +561,50 @@ async function startRecording() {
 
   log('Starting recording...')
   recordingState = 'recording'
+  finalReceived = false  // Reset for new recording
   updateToast('recording', 'Listening...')
 
   try {
-    // Connect WebSocket first
+    // Start audio capture IMMEDIATELY - don't wait for anything else
+    // This ensures we capture speech from the very start
+    const audioOk = await startAudioCaptureDefault()
+    if (!audioOk) {
+      throw new Error('Audio capture failed')
+    }
+
+    // Connect WebSocket next (audio is buffering)
     const wsOk = await connectWebSocket()
     if (!wsOk) {
       throw new Error('WebSocket connection failed')
     }
 
-    // Start audio capture
-    const audioOk = await startAudioCaptureDefault()
-    if (!audioOk) {
-      throw new Error('Audio capture failed')
-    }
+    // Capture context in background - don't block recording
+    // Skip selection capture (Ctrl+C is slow and interferes)
+    captureFullContext(false, false).then(ctx => {
+      capturedContext = ctx
+      log('Captured context:', {
+        hasSelection: !!ctx.selectedText,
+        app: ctx.appName,
+        context: ctx.appContext
+      })
+    }).catch(err => {
+      log('Context capture failed (non-blocking):', err)
+      capturedContext = {
+        selectedText: null,
+        clipboardText: null,
+        appName: 'unknown',
+        windowTitle: '',
+        appContext: 'general',
+        suggestedTone: 'formal'
+      }
+    })
 
     log('Recording started successfully')
   } catch (err) {
     logError('Failed to start recording:', err)
     updateToast('error', String(err))
     recordingState = 'idle'
+    capturedContext = null
     stopAudioCapture()
     if (wsConnection) {
       wsConnection.close()
@@ -616,6 +717,10 @@ function updateToast(type: 'recording' | 'processing' | 'done' | 'error', messag
 
   // Send to toast (simple one-way IPC - doesn't matter if it fails)
   try {
+    // When starting recording, first clear any previous live text
+    if (type === 'recording') {
+      toastWindow?.webContents.send('vf:live-transcription', { partial: '', confirmed: '' })
+    }
     toastWindow?.webContents.send('vf:show-toast', { type, message, mode: 'hold' })
     toastWindow?.show()
   } catch (e) {
@@ -905,6 +1010,32 @@ function setupIpcHandlers() {
     return { ok: true }
   })
 
+  // Mode management
+  ipcMain.handle('vf:set-active-mode', async (_event, modeId: number | null) => {
+    currentModeId = modeId
+    log(`Active mode set to: ${modeId}`)
+    return { ok: true }
+  })
+
+  ipcMain.handle('vf:get-modes', async () => {
+    try {
+      const data = await fetchFromBackend('/api/modes')
+      return { ok: true, data }
+    } catch (error) {
+      return { ok: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle('vf:get-active-mode', async (_event, appName?: string) => {
+    try {
+      const endpoint = appName ? `/api/modes/active?app_name=${encodeURIComponent(appName)}` : '/api/modes/active'
+      const data = await fetchFromBackend(endpoint)
+      return { ok: true, data }
+    } catch (error) {
+      return { ok: false, error: String(error) }
+    }
+  })
+
   ipcMain.handle('vf:get-stats', async () => {
     try {
       const transcriptions = await fetchFromBackend('/api/transcriptions') as Array<{
@@ -993,6 +1124,9 @@ app.whenReady().then(async () => {
   log(`Platform: ${process.platform}`)
   log(`Dev mode: ${isDev}`)
   log('Voice-Flow starting...')
+
+  // Cache audio device at startup for instant recording
+  initAudioDevice()
 
   setupIpcHandlers()
   createWindow(true)
