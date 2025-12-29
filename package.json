@@ -1,0 +1,40 @@
+{
+  "name": "voice-flow",
+  "version": "0.1.0",
+  "description": "Voice-Flow - AI-powered voice transcription desktop app",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --names \"BACKEND,FRONTEND,ELECTRON\" -c \"yellow,cyan,magenta\" \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:electron\"",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && .\\venv\\Scripts\\python.exe -m uvicorn main:app --reload",
+    "dev:backend:unix": "cd backend && source venv/bin/activate && uvicorn main:app --reload",
+    "dev:electron": "wait-on http://localhost:5173 && cd app && npm run dev",
+    "build:frontend": "cd frontend && npm run build",
+    "build:electron": "cd app && npm run build",
+    "build:all": "npm run build:frontend && npm run build:electron",
+    "start:electron": "cd app && npm start",
+    "install:frontend": "cd frontend && npm install",
+    "install:electron": "cd app && npm install",
+    "install:all": "npm install && npm run install:frontend && npm run install:electron",
+    "lint": "cd frontend && npm run lint",
+    "typecheck": "cd frontend && npm run typecheck",
+    "build:prod": "echo 'Building Frontend...' && cd frontend && npm run build && cd .. && echo 'Building Backend (Voice Engine)...' && cd backend && pyinstaller --name voice-engine --onefile --noconsole main.py && cd .. && echo 'Building Installer...' && cd app && npm run dist"
+  },
+  "keywords": [
+    "voice",
+    "transcription",
+    "whisper",
+    "react",
+    "fastapi",
+    "electron"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "wait-on": "^8.0.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

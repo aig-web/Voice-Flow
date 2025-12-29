@@ -1,0 +1,516 @@
+/**
+ * useBackgroundRecorder Hook - Rolling Window with Final-Only Response
+ *
+ * CONTINUOUS STREAMING: Send overlapping audio windows every STEP_MS (400ms)
+ * regardless of silence. Each window contains WINDOW_MS (800ms) of audio
+ * with 50% overlap for continuous transcription.
+ *
+ * NO PARTIAL UPDATES: Server processes chunks in background but only responds
+ * to the explicit "finalize" message with a single merged transcript.
+ *
+ * Flow:
+ * 1. On start: Connect WebSocket, authenticate, start audio capture
+ * 2. During recording: Send rolling windows every STEP_MS continuously
+ * 3. On stop: Send finalize, wait for final_result, display transcript
+ */
+
+import { useEffect, useRef, useCallback } from 'react'
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const WS_URL = API_BASE_URL.replace('http', 'ws')
+
+// =============================================================================
+// ROLLING WINDOW CONFIGURATION
+// =============================================================================
+const SAMPLE_RATE = 16000
+const WINDOW_MS = 800      // Send this much audio as the "chunk" (what ASR sees)
+const STEP_MS = 400        // Send every STEP_MS milliseconds (overlap = 50%)
+const MIN_SEND_MS = 300    // Do not send until at least this much audio exists
+
+// Finalize timeout - wait for server response
+const FINAL_WAIT_MS = 1600  // Slightly more than server's FINAL_WAIT_MS
+
+// Legacy silence detection (kept for potential future use)
+const SILENCE_THRESHOLD = 0.01
+
+// Derived constants
+const WINDOW_SAMPLES = Math.floor(SAMPLE_RATE * WINDOW_MS / 1000)  // 12800 samples
+const MIN_SEND_SAMPLES = Math.floor(SAMPLE_RATE * MIN_SEND_MS / 1000)  // 4800 samples
+
+export function useBackgroundRecorder() {
+  const streamRef = useRef<MediaStream | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const isRecordingRef = useRef(false)
+  const appContextRef = useRef<string>('general')
+
+  // Rolling buffer state - stores all incoming audio samples
+  const rollingBufferRef = useRef<Float32Array>(new Float32Array(0))
+  const rollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const lastSendTimeRef = useRef<number>(0)
+  const sendCountRef = useRef<number>(0)
+
+  // State for final result handling
+  const finalResultResolverRef = useRef<((result: any) => void) | null>(null)
+  const totalTranscriptionRef = useRef<string>('')
+
+  // Send live transcription updates to main process for Toast display
+  const sendLiveUpdate = useCallback((partial: string, confirmed: string) => {
+    if (window.voiceFlow?.sendLiveTranscription) {
+      window.voiceFlow.sendLiveTranscription({ partial, confirmed })
+    }
+  }, [])
+
+  useEffect(() => {
+    console.log('[RollRecorder] Initializing with final-only mode...')
+    console.log(`[RollRecorder] Config: WINDOW_MS=${WINDOW_MS}, STEP_MS=${STEP_MS}, FINAL_WAIT_MS=${FINAL_WAIT_MS}`)
+
+    // Get WebSocket token from backend
+    const getWsToken = async (): Promise<string> => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/ws-token`)
+        const data = await response.json()
+        return data.token
+      } catch (error) {
+        console.error('[RollRecorder] Failed to get WS token:', error)
+        throw error
+      }
+    }
+
+    // Calculate audio level (RMS) - kept for potential future use
+    const calculateAudioLevel = (samples: Float32Array): number => {
+      let sum = 0
+      for (let i = 0; i < samples.length; i++) {
+        sum += samples[i] * samples[i]
+      }
+      return Math.sqrt(sum / samples.length)
+    }
+
+    // Append samples to rolling buffer
+    const appendToRollingBuffer = (newSamples: Float32Array) => {
+      const currentBuffer = rollingBufferRef.current
+      const newBuffer = new Float32Array(currentBuffer.length + newSamples.length)
+      newBuffer.set(currentBuffer, 0)
+      newBuffer.set(newSamples, currentBuffer.length)
+      rollingBufferRef.current = newBuffer
+    }
+
+    // Extract the last WINDOW_MS of audio from rolling buffer
+    const extractWindow = (): Float32Array | null => {
+      const buffer = rollingBufferRef.current
+      const bufferSamples = buffer.length
+
+      if (bufferSamples < MIN_SEND_SAMPLES) {
+        return null
+      }
+
+      const extractSamples = Math.min(bufferSamples, WINDOW_SAMPLES)
+      const startIdx = bufferSamples - extractSamples
+      return buffer.slice(startIdx)
+    }
+
+    // Trim rolling buffer to keep only recent audio
+    const trimRollingBuffer = () => {
+      const buffer = rollingBufferRef.current
+      const maxKeep = WINDOW_SAMPLES * 2
+      if (buffer.length > maxKeep) {
+        rollingBufferRef.current = buffer.slice(buffer.length - maxKeep)
+      }
+    }
+
+    // Convert Float32Array to Int16 PCM bytes
+    const float32ToInt16Buffer = (float32: Float32Array): ArrayBuffer => {
+      const int16 = new Int16Array(float32.length)
+      for (let i = 0; i < float32.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32[i]))
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
+      }
+      return int16.buffer
+    }
+
+    // Send a rolling window chunk to backend (no response expected)
+    const sendRollingChunk = () => {
+      const ws = wsRef.current
+
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.debug('[ROLL-SEND] WS not ready, skipping')
+        return false
+      }
+
+      const window = extractWindow()
+      if (!window) {
+        console.debug('[ROLL-SEND] Buffer too small, skipping')
+        return false
+      }
+
+      const now = Date.now()
+      const windowMs = (window.length / SAMPLE_RATE) * 1000
+      const bufferMs = (rollingBufferRef.current.length / SAMPLE_RATE) * 1000
+
+      sendCountRef.current++
+      const seq = sendCountRef.current
+
+      // Debug log
+      console.debug(
+        `[ROLL-SEND] ts=${now} window_ms=${windowMs.toFixed(0)} buf_ms=${bufferMs.toFixed(0)} seq=${seq}`
+      )
+
+      // Convert to Int16 and send
+      const audioBytes = float32ToInt16Buffer(window)
+
+      // Send metadata first, then binary audio
+      ws.send(JSON.stringify({
+        type: 'chunk',
+        duration_ms: windowMs,
+        send_ts: now,
+        seq: seq
+      }))
+      ws.send(audioBytes)
+
+      lastSendTimeRef.current = now
+      trimRollingBuffer()
+
+      return true
+    }
+
+    // Start the rolling send interval
+    const startRollingInterval = () => {
+      if (rollingIntervalRef.current) {
+        clearInterval(rollingIntervalRef.current)
+      }
+
+      sendCountRef.current = 0
+      lastSendTimeRef.current = Date.now()
+
+      console.log(`[RollRecorder] Starting rolling interval: every ${STEP_MS}ms`)
+
+      rollingIntervalRef.current = setInterval(() => {
+        if (!isRecordingRef.current) {
+          return
+        }
+        sendRollingChunk()
+      }, STEP_MS)
+    }
+
+    // Stop the rolling send interval
+    const stopRollingInterval = () => {
+      if (rollingIntervalRef.current) {
+        clearInterval(rollingIntervalRef.current)
+        rollingIntervalRef.current = null
+        console.log('[RollRecorder] Stopped rolling interval')
+      }
+    }
+
+    // Send finalize and wait for final_result
+    const sendFinalizeAndWait = async (): Promise<{ ok: boolean; text: string } | null> => {
+      const ws = wsRef.current
+
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.log('[RollRecorder] WS not ready for finalize')
+        return null
+      }
+
+      const lastSeq = sendCountRef.current
+
+      // Create promise to wait for final_result
+      const resultPromise = new Promise<any>((resolve) => {
+        const timer = setTimeout(() => {
+          console.warn('[RollRecorder] Finalize timeout')
+          finalResultResolverRef.current = null
+          resolve(null)
+        }, FINAL_WAIT_MS)
+
+        finalResultResolverRef.current = (result) => {
+          clearTimeout(timer)
+          finalResultResolverRef.current = null
+          resolve(result)
+        }
+      })
+
+      // Send finalize message
+      console.log(`[RollRecorder] Sending finalize (seq=${lastSeq})`)
+      ws.send(JSON.stringify({
+        type: 'finalize',
+        seq: lastSeq
+      }))
+
+      // Wait for result
+      const result = await resultPromise
+      return result
+    }
+
+    // Start recording with WebSocket streaming
+    const handleStartRecording = async (data?: { appContext?: string }) => {
+      if (isRecordingRef.current) {
+        console.log('[RollRecorder] Already recording, ignoring start')
+        return
+      }
+
+      appContextRef.current = data?.appContext || 'general'
+      console.log('[RollRecorder] Starting with context:', appContextRef.current)
+
+      // Reset state
+      rollingBufferRef.current = new Float32Array(0)
+      totalTranscriptionRef.current = ''
+      sendCountRef.current = 0
+      finalResultResolverRef.current = null
+
+      try {
+        const token = await getWsToken()
+
+        const ws = new WebSocket(`${WS_URL}/ws/transcribe-chunked`)
+        wsRef.current = ws
+
+        ws.onopen = async () => {
+          console.log('[RollRecorder] WebSocket connected, authenticating...')
+
+          ws.send(JSON.stringify({
+            type: 'auth',
+            token: token,
+            app_context: appContextRef.current
+          }))
+
+          try {
+            await startAudioCapture()
+            startRollingInterval()
+          } catch (err) {
+            console.error('[RollRecorder] Audio capture failed:', err)
+            ws.close()
+            dispatchError('Microphone access denied')
+          }
+        }
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+
+            if (data.error) {
+              console.error('[RollRecorder] WS error:', data.error)
+              dispatchError(data.error)
+              return
+            }
+
+            // Handle final_result (the only response we expect)
+            if (data.type === 'final_result') {
+              const debugInfo = data.debug || {}
+              console.log(
+                `[RollRecorder] final_result received: ok=${data.ok}, ` +
+                `t_ms=${debugInfo.t_ms?.toFixed(0) || '?'}, chunks=${debugInfo.chunks || '?'}`
+              )
+
+              // Resolve the pending promise if there is one
+              if (finalResultResolverRef.current) {
+                finalResultResolverRef.current(data)
+              } else {
+                // No pending resolver - handle directly
+                handleFinalResult(data)
+              }
+            }
+            // Legacy support for 'final' message type (backward compat)
+            else if (data.type === 'final') {
+              console.log('[RollRecorder] Legacy final message received')
+              if (finalResultResolverRef.current) {
+                finalResultResolverRef.current({ ok: true, text: data.text || '' })
+              } else {
+                handleFinalResult({ ok: true, text: data.text || '' })
+              }
+            }
+            // Ignore chunk_result messages (server shouldn't send them in final-only mode)
+            else if (data.type === 'chunk_result') {
+              console.debug('[RollRecorder] Ignoring chunk_result (final-only mode)')
+            }
+          } catch (e) {
+            console.error('[RollRecorder] Parse error:', e)
+          }
+        }
+
+        ws.onerror = (error) => {
+          console.error('[RollRecorder] WebSocket error:', error)
+          dispatchError('Connection error')
+          cleanup()
+        }
+
+        ws.onclose = () => {
+          console.log('[RollRecorder] WebSocket closed')
+          if (isRecordingRef.current) {
+            dispatchError('Connection lost')
+            cleanup()
+          }
+        }
+
+      } catch (error) {
+        console.error('[RollRecorder] Failed to start:', error)
+        const message = error instanceof Error ? error.message : 'Failed to start recording'
+        dispatchError(message)
+      }
+    }
+
+    // Handle final result
+    const handleFinalResult = (data: { ok: boolean; text: string }) => {
+      const finalText = data.text || ''
+      console.log('[RollRecorder] Final text:', finalText?.substring(0, 80))
+
+      if (data.ok && finalText.trim()) {
+        totalTranscriptionRef.current = finalText
+
+        // Send to main process for injection
+        if (window.voiceFlow?.sendRecordingComplete) {
+          window.voiceFlow.sendRecordingComplete(finalText)
+        }
+
+        // Update toast with final transcription
+        sendLiveUpdate('', finalText)
+
+        dispatchSuccess()
+        window.dispatchEvent(new Event('transcription-saved'))
+      } else {
+        dispatchError('No speech detected')
+      }
+
+      cleanup()
+    }
+
+    // Start audio capture
+    const startAudioCapture = async () => {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: SAMPLE_RATE,
+        },
+      })
+
+      streamRef.current = stream
+
+      const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE })
+      audioContextRef.current = audioContext
+
+      const source = audioContext.createMediaStreamSource(stream)
+      const processor = audioContext.createScriptProcessor(2048, 1, 1)
+      processorRef.current = processor
+
+      processor.onaudioprocess = (e) => {
+        if (!isRecordingRef.current) return
+
+        const inputData = e.inputBuffer.getChannelData(0)
+        const audioChunk = new Float32Array(inputData)
+        appendToRollingBuffer(audioChunk)
+      }
+
+      source.connect(processor)
+      processor.connect(audioContext.destination)
+
+      isRecordingRef.current = true
+      console.log('[RollRecorder] Audio capture started')
+    }
+
+    // Stop recording - send finalize and wait for result
+    const handleStopRecording = async () => {
+      if (!isRecordingRef.current) {
+        console.log('[RollRecorder] Not recording, ignoring stop')
+        return
+      }
+
+      console.log('[RollRecorder] Stopping...')
+      isRecordingRef.current = false
+
+      // Stop interval and audio capture first
+      stopRollingInterval()
+      stopAudioCapture()
+
+      // Send finalize and wait for final_result
+      const result = await sendFinalizeAndWait()
+
+      if (result) {
+        handleFinalResult(result)
+      } else {
+        // Timeout or error - show what we have (nothing in final-only mode)
+        console.warn('[RollRecorder] No final result received')
+        dispatchError('Transcription failed')
+        cleanup()
+      }
+    }
+
+    // Cancel recording
+    const handleCancelRecording = () => {
+      if (!isRecordingRef.current) {
+        console.log('[RollRecorder] Not recording, ignoring cancel')
+        return
+      }
+
+      console.log('[RollRecorder] Canceling...')
+      isRecordingRef.current = false
+      cleanup()
+    }
+
+    // Stop audio capture
+    const stopAudioCapture = () => {
+      if (processorRef.current) {
+        processorRef.current.disconnect()
+        processorRef.current = null
+      }
+
+      if (audioContextRef.current) {
+        audioContextRef.current.close()
+        audioContextRef.current = null
+      }
+
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop())
+        streamRef.current = null
+      }
+    }
+
+    // Full cleanup
+    const cleanup = () => {
+      isRecordingRef.current = false
+      rollingBufferRef.current = new Float32Array(0)
+      finalResultResolverRef.current = null
+      stopRollingInterval()
+      stopAudioCapture()
+
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+      }
+    }
+
+    // Helper dispatchers
+    const dispatchSuccess = () => {
+      window.dispatchEvent(new CustomEvent('vf:injection-done'))
+      if (window.voiceFlow?.sendInjectionDone) {
+        window.voiceFlow.sendInjectionDone()
+      }
+    }
+
+    const dispatchError = (error: string) => {
+      window.dispatchEvent(new CustomEvent('vf:injection-failed', { detail: error }))
+      if (window.voiceFlow?.sendRecordingError) {
+        window.voiceFlow.sendRecordingError(error)
+      }
+    }
+
+    // Register listeners
+    if (window.voiceFlow) {
+      window.voiceFlow.onStartRecording(handleStartRecording)
+      window.voiceFlow.onStopRecording(handleStopRecording)
+      window.voiceFlow.onCancelRecording(handleCancelRecording)
+    }
+
+    console.log('[RollRecorder] Initialized with final-only response mode')
+
+    // Cleanup on unmount
+    return () => {
+      console.log('[RollRecorder] Cleaning up...')
+      cleanup()
+
+      if (window.voiceFlow?.removeAllListeners) {
+        window.voiceFlow.removeAllListeners()
+      }
+    }
+  }, [sendLiveUpdate])
+}
+
+export default useBackgroundRecorder

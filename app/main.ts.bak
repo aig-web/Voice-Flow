@@ -1,0 +1,1130 @@
+/**
+ * Voice-Flow Main Process
+ *
+ * WISPR FLOW STYLE: Stealth Mode + Strict State Management
+ *
+ * Features:
+ * - State machine for recording (idle -> recording -> processing -> idle)
+ * - Toast/bubble notifications in top-center
+ * - Hold Alt to record, release to transcribe (true hold mode)
+ * - Clipboard-based text injection (Caps Lock independent)
+ * - Runs in system tray (stealth mode)
+ */
+
+import {
+  app,
+  BrowserWindow,
+  globalShortcut,
+  ipcMain,
+  Tray,
+  Menu,
+  nativeImage,
+  net,
+  screen,
+} from 'electron'
+import path from 'path'
+import { existsSync } from 'fs'
+import { spawn, ChildProcess } from 'child_process'
+import { uIOhook, UiohookKey } from 'uiohook-napi'
+import { injectText } from './platform/injectText'
+import { getActiveWindowCached, type AppContextType } from './platform/appContext'
+
+// ============== CONFIG ==============
+const DEV_URL = 'http://localhost:5173'
+const API_BASE_URL = 'http://localhost:8000'
+// Default hotkey: Ctrl+Alt - hold both to record
+let currentHotkey = 'Ctrl+Alt'
+
+// ============== STATE MACHINE ==============
+type RecordingState = 'idle' | 'recording' | 'processing'
+type RecordingMode = 'hold' | 'lock'  // hold = release to transcribe, lock = click to stop
+let recordingState: RecordingState = 'idle'
+let recordingMode: RecordingMode = 'hold'
+let isHotkeyPressed = false  // Track if hotkey is currently held down
+let currentAppContext: AppContextType = 'general'  // Detected app context for tone adaptation
+
+// ============== GLOBALS ==============
+let mainWindow: BrowserWindow | null = null
+let toastWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+let isQuitting = false
+let backendProcess: ChildProcess | null = null
+let isRendererReady = false  // Track if renderer is loaded and ready
+const isDev = process.env.NODE_ENV === 'development'
+
+// Key code mapping for uiohook
+const KEY_CODES: Record<string, number> = {
+  'Alt': UiohookKey.Alt,
+  'AltLeft': UiohookKey.Alt,
+  'AltRight': UiohookKey.AltRight,
+  'Ctrl': UiohookKey.Ctrl,
+  'Control': UiohookKey.Ctrl,
+  'Shift': UiohookKey.Shift,
+  'Space': UiohookKey.Space,
+  'F1': UiohookKey.F1,
+  'F2': UiohookKey.F2,
+  'F3': UiohookKey.F3,
+  'F4': UiohookKey.F4,
+  'F5': UiohookKey.F5,
+  'F6': UiohookKey.F6,
+  'F7': UiohookKey.F7,
+  'F8': UiohookKey.F8,
+  'F9': UiohookKey.F9,
+  'F10': UiohookKey.F10,
+  'F11': UiohookKey.F11,
+  'F12': UiohookKey.F12,
+}
+
+// ============== LOGGING ==============
+function log(message: string, ...args: unknown[]) {
+  console.log(`[Voice-Flow] ${message}`, ...args)
+}
+
+function logError(message: string, ...args: unknown[]) {
+  console.error(`[Voice-Flow ERROR] ${message}`, ...args)
+}
+
+// ============== TOAST WINDOW (Wispr Flow Style Bubble) ==============
+function createToastWindow() {
+  if (toastWindow) return
+
+  toastWindow = new BrowserWindow({
+    width: 500,
+    height: 120,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    focusable: false,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  })
+
+  // Load toast HTML
+  if (isDev || !app.isPackaged) {
+    toastWindow.loadURL(`${DEV_URL}/#/toast`)
+  } else {
+    const indexPath = path.join(process.resourcesPath, 'app', 'index.html')
+    toastWindow.loadFile(indexPath, { hash: '/toast' })
+  }
+
+  toastWindow.on('closed', () => {
+    toastWindow = null
+  })
+}
+
+/**
+ * Position toast in top center of primary display (Whisper Flow style)
+ */
+function positionToast() {
+  if (!toastWindow) return
+
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const { width } = primaryDisplay.workAreaSize
+
+  toastWindow.setBounds({
+    x: Math.round((width - 500) / 2),
+    y: 40,
+    width: 500,
+    height: 120,
+  })
+}
+
+/**
+ * Show toast with Wispr Flow style messages
+ *
+ * Messages:
+ * - recording: "Listening..."
+ * - processing: "Processing..."
+ * - done: "Injected!"
+ * - error: "Error"
+ *
+ * Auto-hide behavior:
+ * - NEVER hide while recording
+ * - Auto-hide 1.5s after done/error
+ */
+function showToast(type: 'recording' | 'processing' | 'done' | 'error', message?: string) {
+  if (!toastWindow) {
+    createToastWindow()
+  }
+
+  positionToast()
+
+  // Send toast data to renderer with mode info
+  toastWindow?.webContents.send('vf:show-toast', { type, message, mode: recordingMode })
+  toastWindow?.show()
+
+  // Auto-hide logic: NEVER hide during recording, auto-hide after done/error
+  if (type === 'done' || type === 'error') {
+    setTimeout(() => {
+      // Only hide if we're back to idle state
+      if (recordingState === 'idle') {
+        toastWindow?.hide()
+      }
+    }, 1500)
+  }
+  // Note: 'recording' and 'processing' do NOT auto-hide
+}
+
+function hideToast() {
+  toastWindow?.hide()
+}
+
+// ============== MAIN WINDOW (Hidden by default - for settings/history) ==============
+function createWindow(showImmediately = false) {
+  log('Creating main window...')
+
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 600,
+    minHeight: 500,
+    center: true,
+    backgroundColor: '#0f172a',
+    show: false,
+    skipTaskbar: !showImmediately,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  })
+
+  if (isDev || !app.isPackaged) {
+    log(`Loading dev URL: ${DEV_URL}`)
+    mainWindow.loadURL(DEV_URL)
+    mainWindow.webContents.openDevTools({ mode: 'detach' })
+  } else {
+    // Load from bundled files in production
+    const indexPath = path.join(process.resourcesPath, 'app', 'index.html')
+    log(`Loading production file: ${indexPath}`)
+    mainWindow.loadFile(indexPath)
+  }
+
+  mainWindow.once('ready-to-show', () => {
+    log('Window ready')
+    if (showImmediately) {
+      mainWindow?.maximize() // Start maximized
+      mainWindow?.show()
+      mainWindow?.focus()
+    }
+  })
+
+  // Track when the renderer is fully loaded
+  mainWindow.webContents.once('did-finish-load', () => {
+    log('Renderer loaded and ready')
+    isRendererReady = true
+  })
+
+  // Hide to tray instead of closing (Stealth Mode)
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault()
+      mainWindow?.hide()
+      mainWindow?.setSkipTaskbar(true)
+      log('Window hidden to tray')
+    }
+  })
+
+  mainWindow.on('closed', () => {
+    log('Window closed')
+    mainWindow = null
+  })
+
+  log('Main window created (hidden)')
+}
+
+function showWindow() {
+  if (!mainWindow) {
+    createWindow(true)
+    return
+  }
+
+  mainWindow.setSkipTaskbar(false)
+  mainWindow.show()
+  mainWindow.focus()
+  log('Window shown')
+}
+
+function hideWindow() {
+  if (mainWindow) {
+    mainWindow.hide()
+    mainWindow.setSkipTaskbar(true)
+    log('Window hidden')
+  }
+}
+
+function toggleWindow() {
+  if (!mainWindow) {
+    createWindow(true)
+    return
+  }
+
+  if (mainWindow.isVisible()) {
+    hideWindow()
+  } else {
+    showWindow()
+  }
+}
+
+// ============== RECORDING STATE MACHINE ==============
+
+/**
+ * Send IPC message to renderer, ensuring webContents is ready
+ */
+function sendToRenderer(channel: string, ...args: unknown[]) {
+  if (!mainWindow) {
+    logError(`Cannot send '${channel}': mainWindow is null`)
+    return false
+  }
+
+  const wc = mainWindow.webContents
+  if (!wc || wc.isDestroyed()) {
+    logError(`Cannot send '${channel}': webContents is destroyed`)
+    return false
+  }
+
+  // Check if the renderer is ready (page loaded)
+  if (wc.isLoading()) {
+    log(`Waiting for renderer to load before sending '${channel}'...`)
+    wc.once('did-finish-load', () => {
+      log(`Renderer loaded, sending '${channel}'`)
+      wc.send(channel, ...args)
+    })
+    return true
+  }
+
+  wc.send(channel, ...args)
+  return true
+}
+
+/**
+ * Transition to recording state
+ * Only valid from 'idle' state
+ */
+async function startRecording() {
+  if (recordingState !== 'idle') {
+    log(`Cannot start recording: current state is '${recordingState}'`)
+    return
+  }
+
+  // Check if renderer is ready
+  if (!isRendererReady) {
+    log('Renderer not ready yet, waiting...')
+    showToast('processing', 'Starting...')
+
+    // Wait up to 5 seconds for renderer to be ready
+    for (let i = 0; i < 50; i++) {
+      if (isRendererReady) break
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+
+    if (!isRendererReady) {
+      logError('Renderer failed to load in time')
+      showToast('error', 'App not ready')
+      return
+    }
+  }
+
+  // Capture app context BEFORE recording starts (for tone adaptation)
+  try {
+    const appInfo = await getActiveWindowCached()
+    currentAppContext = appInfo.appContext
+    log(`[AppContext] ${appInfo.processName} → ${currentAppContext} (${appInfo.suggestedTone})`)
+  } catch (e) {
+    currentAppContext = 'general'
+    log(`[AppContext] Detection failed, using 'general'`)
+  }
+
+  recordingState = 'recording'
+  log('State: idle -> recording')
+  showToast('recording')
+
+  // Tell renderer to start recording with app context
+  sendToRenderer('vf:start-recording', { appContext: currentAppContext })
+}
+
+/**
+ * Transition to processing state
+ * Only valid from 'recording' state
+ */
+function stopRecording() {
+  if (recordingState !== 'recording') {
+    log(`Cannot stop recording: current state is '${recordingState}'`)
+    return
+  }
+
+  recordingState = 'processing'
+  log('State: recording -> processing')
+  showToast('processing')
+
+  // Tell renderer to stop recording and process
+  sendToRenderer('vf:stop-recording')
+
+  // Safety timeout: If we don't get a response within 30 seconds, reset state
+  setTimeout(() => {
+    if (recordingState === 'processing') {
+      log('Processing timeout - resetting state')
+      recordingState = 'idle'
+      showToast('error', 'Processing timed out')
+    }
+  }, 30000)
+}
+
+/**
+ * Cancel recording and return to idle
+ * Valid from 'recording' or 'processing' state
+ */
+function cancelRecording() {
+  if (recordingState === 'idle') {
+    return
+  }
+
+  log(`State: ${recordingState} -> idle (cancelled)`)
+  recordingState = 'idle'
+  hideToast()
+
+  // Tell renderer to cancel
+  sendToRenderer('vf:cancel-recording')
+}
+
+/**
+ * Complete the flow and return to idle
+ * Called after injection succeeds or fails
+ */
+function completeRecording(success: boolean, errorMessage?: string) {
+  log(`State: ${recordingState} -> idle (${success ? 'success' : 'error'})`)
+  recordingState = 'idle'
+
+  if (success) {
+    showToast('done')
+  } else {
+    showToast('error', errorMessage)
+  }
+}
+
+// ============== HOTKEY REGISTRATION (Dynamic hotkey support) ==============
+
+// Parsed hotkey structure
+interface ParsedHotkey {
+  ctrl: boolean
+  alt: boolean
+  shift: boolean
+  extraKey: string | null  // For keys like Space, F1-F12, letters
+}
+
+// Track pressed state for modifiers
+let pressedModifiers = {
+  ctrl: false,
+  alt: false,
+  shift: false,
+  extraKey: false
+}
+
+// Current parsed hotkey
+let parsedHotkey: ParsedHotkey = { ctrl: true, alt: true, shift: false, extraKey: null }
+
+/**
+ * Parse a hotkey string like "Ctrl+Alt" or "Ctrl+Shift+Space" into components
+ */
+function parseHotkey(hotkey: string): ParsedHotkey {
+  const parts = hotkey.split('+').map(p => p.trim().toLowerCase())
+
+  const result: ParsedHotkey = {
+    ctrl: parts.includes('ctrl') || parts.includes('control') || parts.includes('commandorcontrol'),
+    alt: parts.includes('alt'),
+    shift: parts.includes('shift'),
+    extraKey: null
+  }
+
+  // Find non-modifier key
+  const modifiers = ['ctrl', 'control', 'commandorcontrol', 'alt', 'shift']
+  const extraKey = parts.find(p => !modifiers.includes(p))
+  if (extraKey) {
+    result.extraKey = extraKey.toUpperCase()
+  }
+
+  return result
+}
+
+/**
+ * Check if all required hotkey components are currently pressed
+ */
+function checkHotkeyPressed(): boolean {
+  if (parsedHotkey.ctrl && !pressedModifiers.ctrl) return false
+  if (parsedHotkey.alt && !pressedModifiers.alt) return false
+  if (parsedHotkey.shift && !pressedModifiers.shift) return false
+  if (parsedHotkey.extraKey && !pressedModifiers.extraKey) return false
+
+  // At least one modifier must be required
+  if (!parsedHotkey.ctrl && !parsedHotkey.alt && !parsedHotkey.shift) return false
+
+  return true
+}
+
+/**
+ * Get the keycode for an extra key (Space, F1-F12, letters)
+ */
+function getExtraKeycode(key: string): number | null {
+  const upperKey = key.toUpperCase()
+
+  // Check predefined keycodes
+  if (KEY_CODES[upperKey]) {
+    return KEY_CODES[upperKey]
+  }
+
+  // Single letter keys (A-Z) - uiohook uses keycodes 30-53 for A-Z
+  if (upperKey.length === 1 && upperKey >= 'A' && upperKey <= 'Z') {
+    // Map A-Z to their keycodes (A=30, B=48, etc - varies by keyboard layout)
+    // Using common US layout keycodes
+    const letterCodes: Record<string, number> = {
+      'A': 30, 'B': 48, 'C': 46, 'D': 32, 'E': 18, 'F': 33, 'G': 34, 'H': 35,
+      'I': 23, 'J': 36, 'K': 37, 'L': 38, 'M': 50, 'N': 49, 'O': 24, 'P': 25,
+      'Q': 16, 'R': 19, 'S': 31, 'T': 20, 'U': 22, 'V': 47, 'W': 17, 'X': 45,
+      'Y': 21, 'Z': 44
+    }
+    return letterCodes[upperKey] || null
+  }
+
+  return null
+}
+
+function registerRecordingHotkey(hotkey: string): boolean {
+  currentHotkey = hotkey
+  parsedHotkey = parseHotkey(hotkey)
+  log(`Hotkey set to: ${hotkey}`)
+  log(`Parsed hotkey: ctrl=${parsedHotkey.ctrl}, alt=${parsedHotkey.alt}, shift=${parsedHotkey.shift}, extra=${parsedHotkey.extraKey}`)
+
+  // Update tray tooltip
+  if (tray) {
+    tray.setToolTip(`Voice-Flow - Hold ${hotkey} to record`)
+  }
+
+  return true
+}
+
+function registerHotkeys() {
+  log('Registering hotkeys with uiohook...')
+
+  // Parse the current hotkey
+  parsedHotkey = parseHotkey(currentHotkey)
+  log(`Initial hotkey: ${currentHotkey}`)
+  log(`Parsed: ctrl=${parsedHotkey.ctrl}, alt=${parsedHotkey.alt}, shift=${parsedHotkey.shift}, extra=${parsedHotkey.extraKey}`)
+
+  // Key down event - track all relevant keys
+  uIOhook.on('keydown', (e) => {
+    // Track modifier keys
+    if (e.keycode === UiohookKey.Ctrl || e.keycode === 29) {
+      pressedModifiers.ctrl = true
+    }
+    if (e.keycode === UiohookKey.Alt || e.keycode === 56) {
+      pressedModifiers.alt = true
+    }
+    if (e.keycode === UiohookKey.Shift || e.keycode === 42 || e.keycode === 54) {
+      pressedModifiers.shift = true
+    }
+
+    // Track extra key if configured
+    if (parsedHotkey.extraKey) {
+      const expectedKeycode = getExtraKeycode(parsedHotkey.extraKey)
+      if (expectedKeycode && e.keycode === expectedKeycode) {
+        pressedModifiers.extraKey = true
+      }
+    }
+
+    // Check if all required keys are pressed
+    if (checkHotkeyPressed() && !isHotkeyPressed) {
+      isHotkeyPressed = true
+      log(`Hotkey DOWN (${currentHotkey}), state: ${recordingState}`)
+
+      if (recordingState === 'idle') {
+        recordingMode = 'hold'
+        startRecording()
+      }
+    }
+  })
+
+  // Key up event - Stop recording when any required key is released
+  uIOhook.on('keyup', (e) => {
+    const wasHotkeyPressed = isHotkeyPressed
+
+    // Track modifier keys release
+    if (e.keycode === UiohookKey.Ctrl || e.keycode === 29) {
+      pressedModifiers.ctrl = false
+    }
+    if (e.keycode === UiohookKey.Alt || e.keycode === 56) {
+      pressedModifiers.alt = false
+    }
+    if (e.keycode === UiohookKey.Shift || e.keycode === 42 || e.keycode === 54) {
+      pressedModifiers.shift = false
+    }
+
+    // Track extra key release
+    if (parsedHotkey.extraKey) {
+      const expectedKeycode = getExtraKeycode(parsedHotkey.extraKey)
+      if (expectedKeycode && e.keycode === expectedKeycode) {
+        pressedModifiers.extraKey = false
+      }
+    }
+
+    // If any required key is released and we were recording
+    if (wasHotkeyPressed && !checkHotkeyPressed()) {
+      isHotkeyPressed = false
+      log(`Hotkey UP (${currentHotkey}), state: ${recordingState}, mode: ${recordingMode}`)
+
+      // Only stop on key release in hold mode
+      if (recordingState === 'recording' && recordingMode === 'hold') {
+        stopRecording()
+      }
+    }
+  })
+
+  // Start the hook
+  uIOhook.start()
+  log(`uiohook started - Hold ${currentHotkey} to record, release to transcribe`)
+
+  // ESC to cancel recording
+  globalShortcut.register('Escape', () => {
+    if (recordingState !== 'idle') {
+      log('ESC pressed, canceling')
+      isHotkeyPressed = false
+      pressedModifiers = { ctrl: false, alt: false, shift: false, extraKey: false }
+      cancelRecording()
+    }
+  })
+
+  log(`Hold ${currentHotkey} to record, release to transcribe`)
+}
+
+// ============== TRAY ==============
+function createTray() {
+  log('Creating system tray...')
+
+  const iconPath = path.join(__dirname, 'icon.png')
+
+  let trayIcon: Electron.NativeImage
+  try {
+    trayIcon = nativeImage.createFromPath(iconPath)
+    if (trayIcon.isEmpty()) {
+      trayIcon = nativeImage.createEmpty()
+    }
+  } catch {
+    trayIcon = nativeImage.createEmpty()
+  }
+
+  if (process.platform === 'darwin') {
+    trayIcon.setTemplateImage(true)
+  }
+
+  tray = new Tray(trayIcon)
+  tray.setToolTip('Voice-Flow - Hold Ctrl+Alt to record')
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: '🎤 Start Recording',
+      click: () => {
+        if (recordingState === 'idle') {
+          startRecording()
+        } else if (recordingState === 'recording') {
+          stopRecording()
+        }
+      },
+    },
+    { type: 'separator' },
+    {
+      label: '⚙️ Settings & History',
+      click: () => showWindow(),
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        log('Quit from tray menu')
+        isQuitting = true
+        app.quit()
+      },
+    },
+  ])
+
+  tray.setContextMenu(contextMenu)
+
+  // Left-click on tray: start/stop recording
+  tray.on('click', () => {
+    if (recordingState === 'idle') {
+      startRecording()
+    } else if (recordingState === 'recording') {
+      stopRecording()
+    }
+  })
+
+  log('System tray created')
+}
+
+// ============== API HELPER ==============
+async function fetchFromBackend(endpoint: string, options?: { method?: string; body?: unknown }): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const url = `${API_BASE_URL}${endpoint}`
+    const method = options?.method || 'GET'
+
+    log(`API ${method}: ${endpoint}`)
+
+    const request = net.request({
+      method,
+      url,
+    })
+
+    if (options?.body) {
+      request.setHeader('Content-Type', 'application/json')
+    }
+
+    let responseData = ''
+
+    request.on('response', (response) => {
+      response.on('data', (chunk) => {
+        responseData += chunk.toString()
+      })
+
+      response.on('end', () => {
+        try {
+          const data = JSON.parse(responseData)
+          resolve(data)
+        } catch {
+          resolve(responseData)
+        }
+      })
+    })
+
+    request.on('error', (error) => {
+      logError(`API error for ${endpoint}:`, error)
+      reject(error)
+    })
+
+    if (options?.body) {
+      request.write(JSON.stringify(options.body))
+    }
+
+    request.end()
+  })
+}
+
+// ============== IPC HANDLERS ==============
+function setupIpcHandlers() {
+  log('Setting up IPC handlers...')
+
+  // Status check
+  ipcMain.handle('vf:get-status', async () => {
+    return { ok: true, version: app.getVersion(), recordingState }
+  })
+
+  // Window control
+  ipcMain.handle('vf:toggle-window', async () => {
+    toggleWindow()
+    return { ok: true }
+  })
+
+  ipcMain.handle('vf:hide-window', async () => {
+    hideWindow()
+    return { ok: true }
+  })
+
+  ipcMain.handle('vf:show-window', async () => {
+    showWindow()
+    return { ok: true }
+  })
+
+  // Text injection (manual trigger from UI)
+  ipcMain.handle('vf:inject-text', async (_event, payload: { text: string }) => {
+    log('IPC: inject-text called', { textLength: payload.text?.length })
+
+    // Hide windows first
+    hideWindow()
+
+    const result = await injectText(payload.text)
+
+    if (result.ok) {
+      log('Text injection successful')
+      showToast('done')
+    } else {
+      logError('Text injection failed:', result.error)
+      showToast('error', result.error)
+    }
+
+    return result
+  })
+
+  // Recording completed from renderer - WISPR FLOW STYLE
+  ipcMain.on('vf:recording-complete', async (_event, data: { text: string } | undefined) => {
+    log('=== RECORDING COMPLETE IPC RECEIVED ===')
+    log('Data received:', JSON.stringify(data))
+    log('Current state:', recordingState)
+
+    // Handle null/undefined data
+    const text = data?.text || ''
+    log('Extracted text:', text ? `"${text.substring(0, 50)}..."` : '(empty)')
+
+    if (text.trim().length > 0) {
+      // Keep showing "Processing..." toast while injecting
+      // Toast is already showing 'processing' from stopRecording()
+
+      // Inject text
+      log('Injecting text...')
+      const result = await injectText(text)
+
+      if (result.ok) {
+        log('Auto-inject successful')
+        completeRecording(true)
+      } else {
+        logError('Auto-inject failed:', result.error)
+        completeRecording(false, result.error)
+      }
+    } else {
+      // No text - show brief message then hide
+      log('No text to inject - showing "No speech detected"')
+      recordingState = 'idle'
+      showToast('done', 'No speech detected')
+    }
+    log('=== RECORDING COMPLETE IPC DONE ===')
+  })
+
+  // Recording error from renderer
+  ipcMain.on('vf:recording-error', (_event, error: string) => {
+    log('=== RECORDING ERROR IPC RECEIVED ===')
+    logError('Error:', error)
+    logError('Current state:', recordingState)
+    completeRecording(false, error)
+    log('=== RECORDING ERROR IPC DONE ===')
+  })
+
+  // Injection status from renderer (for logging)
+  ipcMain.on('vf:injection-done', () => {
+    log('Injection completed successfully')
+  })
+
+  ipcMain.on('vf:injection-failed', (_event, error: string) => {
+    logError('Injection failed:', error)
+  })
+
+  // Toast control from renderer
+  ipcMain.on('vf:show-toast', (_event, data: { type: string; message?: string }) => {
+    showToast(data.type as 'recording' | 'processing' | 'done' | 'error', data.message)
+  })
+
+  ipcMain.on('vf:hide-toast', () => {
+    hideToast()
+  })
+
+  // Forward live transcription updates to toast window
+  ipcMain.on('vf:live-transcription-update', (_event, data: { partial: string; confirmed: string }) => {
+    toastWindow?.webContents.send('vf:live-transcription', data)
+  })
+
+  // Cancel recording request from toast X button - don't transcribe
+  ipcMain.on('vf:cancel-recording-request', () => {
+    log('Cancel recording requested from toast')
+    cancelRecording()
+  })
+
+  // Stop recording request from toast stop button - finish and transcribe
+  ipcMain.on('vf:stop-recording-request', () => {
+    log('Stop recording requested from toast')
+    stopRecording()
+  })
+
+  // ============== API PROXY HANDLERS ==============
+
+  // Get settings
+  ipcMain.handle('vf:get-settings', async () => {
+    log('IPC: get-settings')
+    try {
+      const data = await fetchFromBackend('/api/settings')
+      return { ok: true, data }
+    } catch (error) {
+      logError('Failed to get settings:', error)
+      return { ok: false, error: String(error) }
+    }
+  })
+
+  // Save settings
+  ipcMain.handle('vf:save-settings', async (_event, settings: unknown) => {
+    log('IPC: save-settings')
+    try {
+      const data = await fetchFromBackend('/api/settings', {
+        method: 'POST',
+        body: settings,
+      })
+      return { ok: true, data }
+    } catch (error) {
+      logError('Failed to save settings:', error)
+      return { ok: false, error: String(error) }
+    }
+  })
+
+  // Get transcription history
+  ipcMain.handle('vf:get-history', async (_event, limit?: number) => {
+    log('IPC: get-history')
+    try {
+      const endpoint = limit ? `/api/transcriptions?limit=${limit}` : '/api/transcriptions'
+      const data = await fetchFromBackend(endpoint)
+      return { ok: true, data }
+    } catch (error) {
+      logError('Failed to get history:', error)
+      return { ok: false, error: String(error) }
+    }
+  })
+
+  // Update global recording hotkey
+  ipcMain.handle('vf:update-hotkey', async (_event, hotkey: string) => {
+    log(`IPC: update-hotkey to ${hotkey}`)
+    try {
+      const success = registerRecordingHotkey(hotkey)
+      if (success) {
+        return { ok: true }
+      } else {
+        return { ok: false, error: `Failed to register hotkey: ${hotkey}. It may be in use by another application.` }
+      }
+    } catch (error) {
+      logError('Failed to update hotkey:', error)
+      return { ok: false, error: String(error) }
+    }
+  })
+
+  // Get stats (computed from transcriptions)
+  ipcMain.handle('vf:get-stats', async () => {
+    log('IPC: get-stats')
+    try {
+      const transcriptions = await fetchFromBackend('/api/transcriptions') as Array<{
+        polished_text?: string
+        raw_text?: string
+      }>
+
+      if (!Array.isArray(transcriptions)) {
+        return { ok: true, data: { totalTranscriptions: 0, wordsCaptured: 0, timeSavedMinutes: 0 } }
+      }
+
+      const totalTranscriptions = transcriptions.length
+      const wordsCaptured = transcriptions.reduce((acc: number, t) => {
+        const text = t.polished_text || t.raw_text || ''
+        return acc + text.split(/\s+/).filter((w: string) => w.length > 0).length
+      }, 0)
+      const timeSavedMinutes = Math.round(wordsCaptured / 40)
+
+      return {
+        ok: true,
+        data: { totalTranscriptions, wordsCaptured, timeSavedMinutes },
+      }
+    } catch (error) {
+      logError('Failed to get stats:', error)
+      return { ok: false, error: String(error) }
+    }
+  })
+
+  log('IPC handlers registered')
+}
+
+// ============== LOAD SETTINGS ON STARTUP ==============
+async function loadSavedHotkey(): Promise<void> {
+  try {
+    const settings = await fetchFromBackend('/api/settings') as { record_hotkey?: string }
+    if (settings?.record_hotkey) {
+      currentHotkey = settings.record_hotkey
+      log(`Loaded saved hotkey: ${currentHotkey}`)
+    }
+  } catch (error) {
+    log(`Could not load saved hotkey, using default: ${currentHotkey}`)
+  }
+}
+
+// ============== BACKEND PROCESS MANAGEMENT ==============
+/**
+ * Spawn the Python backend (voice-engine.exe) when running as packaged app
+ * In development mode, we assume the backend is started manually
+ */
+async function spawnBackendProcess(): Promise<void> {
+  // Only spawn in packaged mode
+  if (!app.isPackaged) {
+    log('Dev mode: Assuming backend is running manually at localhost:8000')
+    return
+  }
+
+  log('Packaged mode: Starting voice-engine backend...')
+
+  // Path to voice-engine.exe in resources folder
+  const resourcesPath = process.resourcesPath
+  const enginePath = path.join(resourcesPath, 'voice-engine.exe')
+  const ffmpegPath = path.join(resourcesPath, 'ffmpeg')
+
+  log(`Resources path: ${resourcesPath}`)
+  log(`Engine path: ${enginePath}`)
+  log(`FFmpeg path: ${ffmpegPath}`)
+
+  // Check if engine exists
+  if (!existsSync(enginePath)) {
+    logError(`voice-engine.exe not found at: ${enginePath}`)
+    return
+  }
+  log('voice-engine.exe found, spawning...')
+
+  try {
+    // Spawn the backend process
+    log(`Spawning backend: ${enginePath}`)
+
+    backendProcess = spawn(enginePath, [], {
+      cwd: resourcesPath,
+      env: {
+        ...process.env,
+        FFMPEG_PATH: path.join(ffmpegPath, 'ffmpeg.exe'),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false,
+      windowsHide: true,
+    })
+
+    // Log backend stdout
+    backendProcess.stdout?.on('data', (data) => {
+      log(`[Backend] ${data.toString().trim()}`)
+    })
+
+    // Log backend stderr
+    backendProcess.stderr?.on('data', (data) => {
+      logError(`[Backend] ${data.toString().trim()}`)
+    })
+
+    // Handle backend process exit
+    backendProcess.on('exit', (code, signal) => {
+      log(`Backend process exited with code ${code}, signal ${signal}`)
+      backendProcess = null
+
+      // If app is not quitting and backend died unexpectedly, show error
+      if (!isQuitting && code !== 0) {
+        logError('Backend process died unexpectedly!')
+      }
+    })
+
+    backendProcess.on('error', (error) => {
+      logError('Failed to start backend process:', error)
+      backendProcess = null
+    })
+
+    log('Backend process started, PID:', backendProcess.pid)
+
+    // Wait for backend to be ready (poll health endpoint)
+    await waitForBackend()
+
+  } catch (error) {
+    logError('Error spawning backend:', error)
+  }
+}
+
+/**
+ * Wait for backend to be ready by polling the health endpoint
+ */
+async function waitForBackend(maxAttempts = 30, intervalMs = 500): Promise<boolean> {
+  log('Waiting for backend to be ready...')
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await fetchFromBackend('/')
+      if (response && typeof response === 'object' && ('status' in response || 'vectors_stored' in response)) {
+        log(`Backend ready after ${attempt} attempts`)
+        return true
+      }
+    } catch {
+      // Backend not ready yet
+    }
+
+    await new Promise(resolve => setTimeout(resolve, intervalMs))
+  }
+
+  logError('Backend failed to start within timeout')
+  return false
+}
+
+/**
+ * Kill the backend process when app quits
+ */
+function killBackendProcess(): void {
+  if (backendProcess) {
+    log('Killing backend process...')
+    try {
+      // On Windows, we need to kill the process tree
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/pid', String(backendProcess.pid), '/f', '/t'], {
+          windowsHide: true,
+        })
+      } else {
+        backendProcess.kill('SIGTERM')
+      }
+    } catch (error) {
+      logError('Error killing backend:', error)
+    }
+    backendProcess = null
+  }
+}
+
+// ============== APP LIFECYCLE ==============
+app.whenReady().then(async () => {
+  log('App ready')
+  log(`Platform: ${process.platform}`)
+  log(`Dev mode: ${isDev}`)
+  log(`Packaged: ${app.isPackaged}`)
+  log('Voice-Flow starting in STEALTH MODE...')
+
+  // Start backend process first (in packaged mode)
+  await spawnBackendProcess()
+
+  setupIpcHandlers()
+  createWindow(true) // Show dashboard on startup
+  createToastWindow()
+  createTray()
+
+  // Load saved hotkey before registering
+  await loadSavedHotkey()
+  registerHotkeys()
+
+  log(`Hold ${currentHotkey} to record, release to transcribe. Use Tray menu for Settings.`)
+
+  // macOS: Re-create window when dock icon clicked
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow(false)
+    }
+    // Don't auto-show - user must use Tray menu
+  })
+})
+
+app.on('window-all-closed', () => {
+  log('All windows closed')
+  // Don't quit - keep running in tray (Stealth Mode)
+  if (process.platform !== 'darwin') {
+    createWindow(false)
+  }
+})
+
+app.on('will-quit', () => {
+  log('App will quit, stopping uiohook and unregistering shortcuts...')
+  uIOhook.stop()
+  globalShortcut.unregisterAll()
+  killBackendProcess()
+})
+
+app.on('before-quit', () => {
+  log('App before quit')
+  isQuitting = true
+  killBackendProcess()
+})
+
+// ============== ERROR HANDLING ==============
+process.on('uncaughtException', (error) => {
+  logError('Uncaught exception:', error)
+})
+
+process.on('unhandledRejection', (reason, promise) => {
+  logError('Unhandled rejection at:', promise, 'reason:', reason)
+})

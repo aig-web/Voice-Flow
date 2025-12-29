@@ -1,0 +1,87 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Testing
+coverage/
+.pytest_cache/
+
+# Production
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Electron
+out/
+.webpack/
+
+# FFmpeg binaries (download at install time)
+*.zip
+ffmpeg.zip
+ffmpeg-master-latest-win64-gpl/
+ffmpeg-*/
+
+# Large binary files
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Model cache
+.cache/
+*.onnx
+*.pt
+*.pth
+
+# Windows special files
+nul
+NUL
+
+# Embedded repos
+backend/parakeet_setup/
+
+# Release builds
+app/release/

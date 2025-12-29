@@ -1,0 +1,93 @@
+{
+  "name": "voice-flow",
+  "version": "1.0.0",
+  "description": "Voice-Flow - Speech to Text Desktop App",
+  "main": "dist/main.js",
+  "author": "Yash",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc && powershell -ExecutionPolicy Bypass -File run-electron.ps1",
+    "start": "powershell -ExecutionPolicy Bypass -File run-electron.ps1",
+    "watch": "tsc --watch",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "cross-env": "^7.0.3",
+    "electron": "^28.2.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "com.voiceflow.app",
+    "productName": "Voice-Flow",
+    "copyright": "Copyright © 2024 Yash",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "!node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend/dist/voice-engine.exe",
+        "to": "voice-engine.exe"
+      },
+      {
+        "from": "../ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe",
+        "to": "ffmpeg/ffmpeg.exe"
+      },
+      {
+        "from": "../frontend/dist",
+        "to": "app",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Voice-Flow",
+      "runAfterFinish": true
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility"
+    }
+  },
+  "dependencies": {
+    "@types/ws": "^8.18.1",
+    "uiohook-napi": "^1.5.4",
+    "ws": "^8.18.3"
+  }
+}
