@@ -38,7 +38,17 @@ def setup_cache_dirs():
 
 # ============== CONFIGURATION ==============
 PARAKEET_MODEL_NAME = "nvidia/parakeet-tdt-0.6b-v2"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Device selection: CUDA (NVIDIA) > MPS (Apple Silicon) > CPU
+def get_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return "mps"
+    else:
+        return "cpu"
+
+DEVICE = get_device()
 MODEL_PRECISION = "fp16" if DEVICE == "cuda" else "fp32"
 
 
@@ -291,22 +301,28 @@ class TranscriptionService:
         t0 = time.perf_counter()
         method_used = "unknown"
 
+        # Helper for autocast context (only CUDA supports amp.autocast)
+        def get_autocast_context():
+            if self.device.type == "cuda":
+                return torch.cuda.amp.autocast(enabled=True)
+            else:
+                # MPS and CPU don't use autocast the same way
+                return torch.inference_mode()
+
         # Option A: Try direct waveform/tensor API if available
         # NeMo Parakeet models typically don't have this, but check anyway
         try:
             if hasattr(self.model, 'transcribe_waveform'):
                 wav_tensor = torch.from_numpy(audio_float32).unsqueeze(0).to(self.device)
                 with torch.inference_mode():
-                    with torch.cuda.amp.autocast(enabled=(self.device.type == "cuda")):
-                        text = self.model.transcribe_waveform(wav_tensor)
+                    text = self.model.transcribe_waveform(wav_tensor)
                 took_ms = (time.perf_counter() - t0) * 1000.0
                 logger.info(f"transcribe_ndarray: {took_ms:.1f}ms via Option A (waveform)")
                 return self._extract_and_clean_text(text)
             elif hasattr(self.model, 'transcribe_audio'):
                 wav_tensor = torch.from_numpy(audio_float32).unsqueeze(0).to(self.device)
                 with torch.inference_mode():
-                    with torch.cuda.amp.autocast(enabled=(self.device.type == "cuda")):
-                        text = self.model.transcribe_audio(wav_tensor)
+                    text = self.model.transcribe_audio(wav_tensor)
                 took_ms = (time.perf_counter() - t0) * 1000.0
                 logger.info(f"transcribe_ndarray: {took_ms:.1f}ms via Option A (audio)")
                 return self._extract_and_clean_text(text)
@@ -323,8 +339,7 @@ class TranscriptionService:
             # Check if transcribe accepts file-like by trying it
             # This will likely fail for NeMo, but we try
             with torch.inference_mode():
-                with torch.cuda.amp.autocast(enabled=(self.device.type == "cuda")):
-                    output = self.model.transcribe(bio, batch_size=1, verbose=False)
+                output = self.model.transcribe(bio, batch_size=1, verbose=False)
 
             took_ms = (time.perf_counter() - t0) * 1000.0
             logger.info(f"transcribe_ndarray: {took_ms:.1f}ms via Option B (BytesIO)")
@@ -345,8 +360,7 @@ class TranscriptionService:
 
             t_infer = time.perf_counter()
             with torch.inference_mode():
-                with torch.cuda.amp.autocast(enabled=(self.device.type == "cuda")):
-                    output = self.model.transcribe([tmp_file.name], batch_size=1, verbose=False)
+                output = self.model.transcribe([tmp_file.name], batch_size=1, verbose=False)
             infer_ms = (time.perf_counter() - t_infer) * 1000.0
 
             took_ms = (time.perf_counter() - t0) * 1000.0
