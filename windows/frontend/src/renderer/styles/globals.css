@@ -1,0 +1,301 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary: #FFD93D;
+  --primary-dark: #FFB84C;
+  --primary-hover: #FFB84C;
+  --primary-content: #1A1A1A;
+  --background-light: #FAFAFA;
+  --surface-light: #FFFFFF;
+  --surface-hover: #F5F5F5;
+  --surface-active: #EEEEEE;
+  --text-main: #1A1A1A;
+  --text-muted: #6B7280;
+  --text-body: #4B5563;
+  --border-light: #E5E7EB;
+}
+
+/* Dark Theme - Applied when .dark class is on html element */
+html.dark,
+.dark {
+  --primary: #FFD93D;
+  --primary-dark: #FFB84C;
+  --primary-hover: #FFE066;
+  --primary-content: #1A1A1A;
+  --background-light: #0D0D0D;
+  --surface-light: #161616;
+  --surface-hover: #1F1F1F;
+  --surface-active: #2A2A2A;
+  --text-main: #FAFAFA;
+  --text-muted: #A1A1AA;
+  --text-body: #D4D4D8;
+  --border-light: #27272A;
+}
+
+/* Ensure dark mode inherits to all descendants */
+html.dark body,
+html.dark #root {
+  background: var(--background-light);
+  color: var(--text-main);
+}
+
+html, body {
+  background: var(--background-light);
+  color: var(--text-main);
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Numbers font */
+.font-numbers {
+  font-family: 'DM Sans', system-ui, sans-serif;
+}
+
+/* Toast window - transparent background */
+html.toast-window,
+html.toast-window body,
+body.toast-window {
+  background: transparent !important;
+}
+
+/* Also detect toast via hash */
+html:has(body[data-toast="true"]),
+html:has(body[data-toast="true"]) body {
+  background: transparent !important;
+}
+
+/* Selection */
+::selection {
+  background-color: var(--primary);
+  color: var(--primary-content);
+}
+
+/* Material Icons */
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+.icon-filled {
+  font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-light);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Animations */
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes sound-wave {
+  0%, 100% { height: 4px; opacity: 0.5; }
+  50% { height: 14px; opacity: 1; }
+}
+
+@keyframes ping {
+  75%, 100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+.animate-scale-in {
+  animation: scale-in 0.2s ease-out;
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.3s ease-out;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out;
+}
+
+.animate-ping {
+  animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 1.5s ease-out infinite;
+}
+
+/* Wave bars for recording */
+.wave-bar {
+  background-color: var(--primary);
+  border-radius: 99px;
+  width: 3px;
+  animation: sound-wave 1.2s ease-in-out infinite;
+}
+
+/* Glass panel */
+.glass-panel {
+  background: var(--surface-light);
+  border: 1px solid var(--border-light);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+}
+
+.dark .glass-panel {
+  box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+}
+
+/* Card hover effect */
+.card-hover {
+  transition: all 0.2s ease;
+}
+
+.card-hover:hover {
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+  transform: translateY(-1px);
+}
+
+.dark .card-hover:hover {
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+
+/* Smooth transitions for theme */
+* {
+  transition-property: background-color, border-color;
+  transition-duration: 150ms;
+  transition-timing-function: ease;
+}
+
+/* Button styles */
+.btn-primary {
+  background-color: var(--primary);
+  color: var(--primary-content);
+  font-weight: 600;
+  border-radius: 0.5rem;
+  transition: all 0.2s ease;
+}
+
+.btn-primary:hover {
+  background-color: var(--primary-hover);
+  box-shadow: 0 4px 12px rgba(255, 217, 61, 0.3);
+}
+
+.btn-secondary {
+  background-color: var(--surface-light);
+  color: var(--text-main);
+  font-weight: 500;
+  border: 1px solid var(--border-light);
+  border-radius: 0.5rem;
+  transition: all 0.2s ease;
+}
+
+.btn-secondary:hover {
+  background-color: var(--surface-hover);
+  border-color: var(--text-muted);
+}
+
+/* Stat card trend indicator */
+.trend-up {
+  color: #10B981;
+}
+
+.trend-badge {
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+}
+
+code {
+  font-family: 'SF Mono', Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+/* Activity item icons */
+.activity-icon {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.activity-icon.document {
+  background-color: #DBEAFE;
+  color: #3B82F6;
+}
+
+.activity-icon.idea {
+  background-color: #FEF3C7;
+  color: #F59E0B;
+}
+
+.activity-icon.email {
+  background-color: #E5E7EB;
+  color: #6B7280;
+}
+
+.dark .activity-icon.document {
+  background-color: rgba(59, 130, 246, 0.2);
+}
+
+.dark .activity-icon.idea {
+  background-color: rgba(245, 158, 11, 0.2);
+}
+
+.dark .activity-icon.email {
+  background-color: rgba(107, 114, 128, 0.2);
+}

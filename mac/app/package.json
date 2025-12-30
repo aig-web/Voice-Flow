@@ -1,0 +1,79 @@
+{
+  "name": "voice-flow",
+  "version": "1.0.0",
+  "description": "Voice-Flow - Speech to Text Desktop App for macOS",
+  "main": "dist/main.js",
+  "author": "Yash",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc && bash run-electron.sh",
+    "start": "bash run-electron.sh",
+    "watch": "tsc --watch",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "cross-env": "^7.0.3",
+    "electron": "^28.2.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "com.voiceflow.app",
+    "productName": "Voice-Flow",
+    "copyright": "Copyright @ 2024 Yash",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "!node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../frontend/dist",
+        "to": "app",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "@types/ws": "^8.18.1",
+    "uiohook-napi": "^1.5.4",
+    "ws": "^8.18.3"
+  }
+}

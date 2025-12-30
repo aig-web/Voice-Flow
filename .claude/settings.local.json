@@ -138,7 +138,27 @@
       "Bash(cmd //c \"taskkill /F /IM electron.exe 2>nul & taskkill /F /IM node.exe 2>nul & echo Done\")",
       "Bash(cmd //c \"taskkill /F /IM electron.exe 2>nul & echo Done\")",
       "Bash(cmd //c \"taskkill /F /IM node.exe 2>nul & echo Done\")",
-      "Bash(cmd //c \"taskkill /F /IM electron.exe 2>nul & taskkill /F /IM node.exe 2>nul & taskkill /F /IM python.exe 2>nul & echo Done\")"
+      "Bash(cmd //c \"taskkill /F /IM electron.exe 2>nul & taskkill /F /IM node.exe 2>nul & taskkill /F /IM python.exe 2>nul & echo Done\")",
+      "Bash(\"E:/Yash/PROJECTS/Voice-Flow/backend/venv/Scripts/python.exe\" --version)",
+      "Bash(\"E:/Yash/PROJECTS/Voice-Flow/backend/venv/Scripts/pip.exe\" list)",
+      "Bash(\"E:/Yash/PROJECTS/Voice-Flow/ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe\" -y -f dshow -i \"audio=Microphone Array \\(Realtek\\(R\\) Audio\\)\" -t 3 -ar 16000 -ac 1 -f wav \"E:/Yash/PROJECTS/Voice-Flow/test_audio.wav\")",
+      "Bash(\"E:/Yash/PROJECTS/Voice-Flow/backend/venv/Scripts/pip.exe\" show numpy)",
+      "Bash(\"../backend/venv/Scripts/python.exe\" -m uvicorn:*)",
+      "Bash(\"E:/Yash/PROJECTS/Voice-Flow/ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe\":*)",
+      "Bash(\"E:/Yash/PROJECTS/Voice-Flow/ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe\" -y -f dshow -i \"audio=Microphone Array \\(Realtek\\(R\\) Audio\\)\" -t 5 -ar 16000 -ac 1 \"E:/Yash/PROJECTS/Voice-Flow/test_speech.wav\")",
+      "WebSearch",
+      "Bash(mkdir:*)",
+      "Bash(git pull:*)",
+      "Bash(git add:*)",
+      "Bash(git reset:*)",
+      "Bash(git mv:*)",
+      "Bash(\"E:/Yash/PROJECTS/Voice-Flow/windows/backend/venv/Scripts/python.exe\" -m uvicorn:*)",
+      "Bash(\"E:/Yash/PROJECTS/Voice-Flow/windows/backend/venv/Scripts/pip.exe\" install:*)",
+      "Bash(\"E:/Yash/PROJECTS/Voice-Flow/windows/backend/venv/Scripts/python.exe\":*)",
+      "Bash(\"E:/Yash/PROJECTS/Voice-Flow/windows/backend/venv/Scripts/pip.exe\" list:*)",
+      "Bash(rm:*)",
+      "Bash(\"E:/Yash/PROJECTS/Voice-Flow/windows/backend/venv/Scripts/pip.exe\" install -r \"E:/Yash/PROJECTS/Voice-Flow/windows/backend/requirements.txt\")",
+      "Bash(\"E:/Yash/PROJECTS/Voice-Flow/windows/backend/venv/Scripts/pip.exe\" install \"numpy<2.0\")"
     ]
   }
 }
