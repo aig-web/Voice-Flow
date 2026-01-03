@@ -90,3 +90,4 @@ app/release/
 release/
 *.dmg
 *.pkg
+mac/ffmpeg/

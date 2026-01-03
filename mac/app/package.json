@@ -1,7 +1,7 @@
 {
-  "name": "voice-flow",
-  "version": "1.0.0",
-  "description": "Voice-Flow - Speech to Text Desktop App for macOS",
+  "name": "stop-typing",
+  "version": "2.0.0",
+  "description": "Stop Typing - Speech to Text Desktop App for macOS",
   "main": "dist/main.js",
   "author": "Yash",
   "license": "MIT",
@@ -22,9 +22,9 @@
     "typescript": "^5.7.2"
   },
   "build": {
-    "appId": "com.voiceflow.app",
-    "productName": "Voice-Flow",
-    "copyright": "Copyright @ 2024 Yash",
+    "appId": "com.stoptyping.app",
+    "productName": "Stop Typing",
+    "copyright": "Copyright @ 2025 Yash",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -47,6 +47,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "../ffmpeg/${arch}",
+        "to": "ffmpeg",
+        "filter": [
+          "ffmpeg"
+        ]
       }
     ],
     "mac": {
@@ -54,7 +61,7 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": ["arm64"]
         }
       ],
       "artifactName": "${productName}-${version}-${arch}.${ext}",

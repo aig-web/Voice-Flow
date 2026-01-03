@@ -561,7 +561,11 @@ function stopRecording() {
   updateToast('processing', 'Processing...')
 
   stopAudioCapture()
-  disconnectWebSocket()
+
+  // Wait for audio to be fully transmitted before sending stop
+  setTimeout(() => {
+    disconnectWebSocket()
+  }, 300)
 
   setTimeout(() => {
     if (recordingState === 'processing') {
