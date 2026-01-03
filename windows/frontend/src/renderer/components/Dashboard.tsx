@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import clsx from 'clsx'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
 
 interface Transcription {
   id: number
@@ -70,10 +70,9 @@ export function Dashboard() {
 
   const fetchHotkey = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/settings`)
-      const data = await response.json()
-      if (data.record_hotkey) {
-        const formatted = data.record_hotkey
+      const result = await window.voiceFlow.getSettings()
+      if (result.ok && result.data?.record_hotkey) {
+        const formatted = result.data.record_hotkey
           .replace('CommandOrControl', 'Ctrl')
           .replace('Control', 'Ctrl')
           .replace('Meta', 'Cmd')
@@ -88,27 +87,23 @@ export function Dashboard() {
   const fetchData = async () => {
     try {
       setError(null)
-      const response = await fetch(`${API_BASE_URL}/api/transcriptions`)
 
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`)
+      // Fetch history and stats from main process via voiceFlow API
+      const [historyResult, statsResult] = await Promise.all([
+        window.voiceFlow.getHistory(50),
+        window.voiceFlow.getStats()
+      ])
+
+      if (historyResult.ok && Array.isArray(historyResult.data)) {
+        setTranscriptions(historyResult.data)
       }
 
-      const data: Transcription[] = await response.json()
-
-      if (Array.isArray(data)) {
-        setTranscriptions(data)
-
-        // Calculate stats
-        const totalTranscriptions = data.length
-        const wordsCaptured = data.reduce((acc, t) => {
-          const text = t.polished_text || t.raw_text || ''
-          return acc + text.split(/\s+/).filter(w => w.length > 0).length
-        }, 0)
-        // Average typing speed is ~40 WPM, so time saved = words / 40
-        const timeSavedMinutes = Math.round(wordsCaptured / 40)
-
-        setStats({ totalTranscriptions, wordsCaptured, timeSavedMinutes })
+      if (statsResult.ok && statsResult.data) {
+        setStats({
+          totalTranscriptions: statsResult.data.totalTranscriptions || 0,
+          wordsCaptured: statsResult.data.wordsCaptured || 0,
+          timeSavedMinutes: statsResult.data.timeSavedMinutes || 0
+        })
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load transcriptions'

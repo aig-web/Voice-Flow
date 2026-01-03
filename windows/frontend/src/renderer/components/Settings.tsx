@@ -4,7 +4,7 @@ import { AlertDialog } from './AlertDialog'
 import { useTheme } from '../contexts/ThemeContext'
 import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, type Language } from '../i18n/languages'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
 
 // Detect platform
 const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0
@@ -63,12 +63,13 @@ export function Settings() {
 
   const fetchSettings = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/settings`)
-      const data = await response.json()
-      setSettings(data)
-      setTone(data.tone || 'formal')
-      setRecordHotkey(data.record_hotkey || (isMac ? 'Meta+Alt' : 'Control+Alt'))
-      setLanguage(data.language || DEFAULT_LANGUAGE)
+      const result = await window.voiceFlow.getSettings()
+      if (result.ok && result.data) {
+        setSettings(result.data)
+        setTone(result.data.tone || 'formal')
+        setRecordHotkey(result.data.record_hotkey || 'CommandOrControl+Shift+S')
+        setLanguage(result.data.language || DEFAULT_LANGUAGE)
+      }
     } catch (error) {
       console.error('Error fetching settings:', error)
     } finally {
@@ -128,9 +129,9 @@ export function Settings() {
     console.log('[Settings] Save clicked, hotkey:', recordHotkey)
     try {
       setIsSaving(true)
-      // Get current dictionary to preserve it
-      const currentResponse = await fetch(`${API_BASE_URL}/api/settings`)
-      const currentData = await currentResponse.json()
+      // Get current settings to preserve dictionary
+      const currentResult = await window.voiceFlow.getSettings()
+      const currentData = currentResult.ok ? currentResult.data : {}
       console.log('[Settings] Current data:', currentData)
 
       const payload = {
@@ -141,33 +142,21 @@ export function Settings() {
       }
       console.log('[Settings] Saving payload:', payload)
 
-      const response = await fetch(`${API_BASE_URL}/api/settings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-
-      const result = await response.json()
+      const result = await window.voiceFlow.saveSettings(payload)
       console.log('[Settings] Save response:', result)
 
-      if (response.ok && !result.error) {
+      if (result.ok) {
         // Dispatch event to notify other components (like sidebar) that settings changed
         window.dispatchEvent(new CustomEvent('settings-updated'))
 
         // Notify Electron main process to update the hotkey
-        console.log('[Settings] window.voiceFlow:', window.voiceFlow)
-        if (window.voiceFlow?.updateHotkey) {
-          console.log('[Settings] Calling updateHotkey IPC...')
-          const ipcResult = await window.voiceFlow.updateHotkey(recordHotkey)
-          console.log('[Settings] IPC result:', ipcResult)
-          if (ipcResult.ok) {
-            setAlert({ title: 'Settings Saved', message: `Hotkey updated to ${formatHotkeyDisplay(recordHotkey)}` })
-          } else {
-            setAlert({ title: 'Warning', message: `Settings saved but hotkey registration failed: ${ipcResult.error}` })
-          }
+        console.log('[Settings] Calling updateHotkey IPC...')
+        const ipcResult = await window.voiceFlow.updateHotkey(recordHotkey)
+        console.log('[Settings] IPC result:', ipcResult)
+        if (ipcResult.ok) {
+          setAlert({ title: 'Settings Saved', message: `Hotkey updated to ${formatHotkeyDisplay(recordHotkey)}` })
         } else {
-          console.log('[Settings] voiceFlow.updateHotkey not available')
-          setAlert({ title: 'Settings Saved', message: 'Your preferences have been saved successfully!' })
+          setAlert({ title: 'Warning', message: `Settings saved but hotkey registration failed: ${ipcResult.error}` })
         }
       } else {
         console.log('[Settings] Save failed:', result)
@@ -391,7 +380,7 @@ export function Settings() {
                 </div>
                 <span className={clsx(
                   'text-sm font-medium',
-                  theme === option.value ? 'text-primary-content' : 'text-text-main'
+                  theme === option.value ? 'text-primary dark:text-primary-light' : 'text-text-main'
                 )}>
                   {option.label}
                 </span>

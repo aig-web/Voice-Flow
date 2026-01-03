@@ -11,8 +11,6 @@ interface TranscriptionRecord {
   duration: number
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-
 export function History() {
   const [transcriptions, setTranscriptions] = useState<TranscriptionRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -33,9 +31,10 @@ export function History() {
 
   const fetchTranscriptions = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/transcriptions`)
-      const data = await response.json()
-      setTranscriptions(data)
+      const result = await window.voiceFlow.getHistory(50)
+      if (result.ok && result.data) {
+        setTranscriptions(result.data)
+      }
     } catch (error) {
       console.error('Error fetching history:', error)
     } finally {
@@ -81,37 +80,30 @@ export function History() {
       setShowExportMenu(false)
       setLastExportFormat(format)
 
-      const response = await fetch(`${API_BASE_URL}/api/transcriptions/export`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          format: format,
-          transcription_ids: Array.from(selectedIds)
-        })
-      })
+      const result = await window.voiceFlow.exportTranscriptions(format, Array.from(selectedIds))
 
-      const result = await response.json()
-
-      if (result.error) {
-        setAlert({ title: 'Export Error', message: result.error })
+      if (!result.ok || !result.data) {
+        setAlert({ title: 'Export Error', message: result.error || 'Export failed' })
         return
       }
 
+      const data = result.data
+
       // Download file
       let blob: Blob
-      let filename = result.filename
+      let filename = data.filename
 
       if (format === 'pdf') {
-        const hexString = result.data
+        const hexString = data.data
         const bytes = new Uint8Array(hexString.length / 2)
         for (let i = 0; i < hexString.length; i += 2) {
           bytes[i / 2] = parseInt(hexString.substr(i, 2), 16)
         }
         blob = new Blob([bytes], { type: 'application/pdf' })
       } else if (format === 'csv') {
-        blob = new Blob([result.data], { type: 'text/csv' })
+        blob = new Blob([data.data], { type: 'text/csv' })
       } else {
-        blob = new Blob([result.data], { type: 'application/json' })
+        blob = new Blob([data.data], { type: 'application/json' })
       }
 
       const url = URL.createObjectURL(blob)
@@ -141,7 +133,7 @@ export function History() {
     if (deleteId === null) return
 
     try {
-      await fetch(`${API_BASE_URL}/api/transcriptions/${deleteId}`, { method: 'DELETE' })
+      await window.voiceFlow.deleteTranscription(deleteId)
       setTranscriptions(transcriptions.filter(t => t.id !== deleteId))
       const newSelected = new Set(selectedIds)
       newSelected.delete(deleteId)

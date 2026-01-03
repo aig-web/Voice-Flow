@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
 
 export interface TranscriptionResponse {
   transcription: string
@@ -74,4 +74,42 @@ export async function testBackendConnection(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * Get transcriptions from local database via IPC
+ * @param limit - Number of transcriptions to retrieve (default: 50)
+ */
+export async function getTranscriptions(limit = 50) {
+  return await window.electron.ipcRenderer.invoke('vf:get-transcriptions', limit)
+}
+
+/**
+ * Delete a transcription from local database via IPC
+ * @param id - ID of the transcription to delete
+ */
+export async function deleteTranscription(id: number) {
+  return await window.electron.ipcRenderer.invoke('vf:delete-transcription', id)
+}
+
+/**
+ * Get statistics from local database via IPC
+ */
+export async function getStats() {
+  return await window.electron.ipcRenderer.invoke('vf:get-stats')
+}
+
+/**
+ * Get user settings from local database via IPC
+ */
+export async function getSettings() {
+  return await window.electron.ipcRenderer.invoke('vf:get-settings')
+}
+
+/**
+ * Save user settings to local database via IPC
+ * @param settings - Settings object to save
+ */
+export async function updateSettings(settings: any) {
+  return await window.electron.ipcRenderer.invoke('vf:save-settings', settings)
 }

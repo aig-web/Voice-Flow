@@ -1,0 +1,13 @@
+# Add your authorized users' emails here (one per line)
+# These emails will be allowed to use the Voice-Flow app
+
+user1@gmail.com
+user2@gmail.com
+user3@gmail.com
+user4@gmail.com
+user5@gmail.com
+
+# Example:
+# john@gmail.com
+# sarah@company.com
+# mike@example.com

@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { AlertDialog } from './AlertDialog'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-
 interface Snippet {
   id: number
   trigger: string
@@ -26,9 +24,10 @@ export function Snippets() {
 
   const fetchSnippets = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/snippets`)
-      const data = await response.json()
-      setSnippets(data)
+      const result = await window.voiceFlow.getSnippets()
+      if (result.ok && result.data) {
+        setSnippets(result.data)
+      }
     } catch (error) {
       console.error('Error fetching snippets:', error)
     } finally {
@@ -44,24 +43,15 @@ export function Snippets() {
 
     try {
       setIsAdding(true)
-      const response = await fetch(`${API_BASE_URL}/api/snippets`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          trigger: newTrigger.trim(),
-          content: newContent.trim()
-        })
-      })
+      const result = await window.voiceFlow.addSnippet(newTrigger.trim(), newContent.trim())
 
-      if (response.ok) {
-        const data = await response.json()
+      if (result.ok) {
         setNewTrigger('')
         setNewContent('')
         fetchSnippets()
-        setAlert({ title: 'Success', message: data.message || 'Shortcut added!' })
+        setAlert({ title: 'Success', message: result.data?.message || 'Shortcut added!' })
       } else {
-        const errorData = await response.json()
-        setAlert({ title: 'Error', message: errorData.detail || 'Failed to add shortcut' })
+        setAlert({ title: 'Error', message: result.error || 'Failed to add shortcut' })
       }
     } catch (error) {
       console.error('Error adding snippet:', error)
@@ -73,11 +63,9 @@ export function Snippets() {
 
   const handleDeleteSnippet = async (id: number) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/snippets/${id}`, {
-        method: 'DELETE'
-      })
+      const result = await window.voiceFlow.deleteSnippet(id)
 
-      if (response.ok) {
+      if (result.ok) {
         setSnippets(snippets.filter(s => s.id !== id))
         setAlert({ title: 'Success', message: 'Shortcut removed!' })
       }

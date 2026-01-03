@@ -1,7 +1,7 @@
 {
   "name": "stop-typing",
-  "version": "1.0.0",
-  "description": "Stop Typing - Speech to Text Desktop App",
+  "version": "2.0.0",
+  "description": "Stop Typing - AI Voice Transcription Desktop App",
   "main": "dist/main.js",
   "author": "Yash",
   "license": "MIT",
@@ -20,6 +20,8 @@
     "dist:mac": "electron-builder --mac"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.2",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.2",
     "cross-env": "^7.0.3",
     "electron": "^28.2.0",
@@ -29,20 +31,23 @@
   "build": {
     "appId": "com.stoptyping.app",
     "productName": "Stop Typing",
-    "copyright": "Copyright © 2024 Yash",
+    "copyright": "Copyright © 2025 Yash",
     "directories": {
       "output": "release",
       "buildResources": "build"
     },
     "files": [
       "dist/**/*",
-      "!node_modules/**/*"
+      "!node_modules/**/test",
+      "!node_modules/**/tests",
+      "!node_modules/**/*.md",
+      "!node_modules/**/.bin"
+    ],
+    "asarUnpack": [
+      "node_modules/uiohook-napi/**/*",
+      "node_modules/node-gyp-build/**/*"
     ],
     "extraResources": [
-      {
-        "from": "../backend/dist/voice-engine.exe",
-        "to": "voice-engine.exe"
-      },
       {
         "from": "../ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe",
         "to": "ffmpeg/ffmpeg.exe"
@@ -68,14 +73,20 @@
       "signAndEditExecutable": false
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": false,
-      "deleteAppDataOnUninstall": true,
-      "createDesktopShortcut": true,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "shortcutName": "Stop Typing",
-      "runAfterFinish": true
+      "menuCategory": false,
+      "runAfterFinish": true,
+      "include": "build/installer.nsh",
+      "warningsAsErrors": false,
+      "packElevateHelper": true,
+      "uninstallDisplayName": "Stop Typing - Voice Transcription"
     },
     "mac": {
       "category": "public.app-category.productivity",

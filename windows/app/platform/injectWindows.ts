@@ -56,7 +56,7 @@ export async function injectTextWindows(text: string): Promise<InjectResult> {
       const command = `
 $text = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedText}'))
 Set-Clipboard -Value $text
-Start-Sleep -Milliseconds 200
+Start-Sleep -Milliseconds 20
 $wsh = New-Object -ComObject WScript.Shell
 $wsh.SendKeys('^v')
 `
@@ -106,6 +106,6 @@ $wsh.SendKeys('^v')
         resolve({ ok: false, error: 'Injection timed out' })
       }, 10000)
 
-    }, 600) // 600ms delay - wait for user to fully release Ctrl+Alt hotkey
+    }, 50) // 50ms delay - minimal wait for hotkey release
   })
 }

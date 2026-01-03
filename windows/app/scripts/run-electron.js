@@ -28,14 +28,15 @@ console.log(`[Electron] Platform: ${platform}`);
 console.log(`[Electron] Path: ${electronPath}`);
 console.log(`[Electron] App Dir: ${appDir}`);
 
+// Create clean env without ELECTRON_RUN_AS_NODE
+const cleanEnv = { ...process.env };
+delete cleanEnv.ELECTRON_RUN_AS_NODE;
+cleanEnv.NODE_ENV = 'development';
+
 const child = spawn(electronPath, [appDir], {
   stdio: 'inherit',
   cwd: appDir,
-  env: {
-    ...process.env,
-    ELECTRON_RUN_AS_NODE: '',
-    NODE_ENV: 'development'
-  }
+  env: cleanEnv
 });
 
 child.on('error', (err) => {

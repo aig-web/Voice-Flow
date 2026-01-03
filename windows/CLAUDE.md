@@ -108,8 +108,10 @@ Three main tables:
 ## Ports
 
 - Frontend (Vite): `http://localhost:5173`
-- Backend (FastAPI): `http://localhost:8000`
-- API Docs: `http://localhost:8000/docs`
+- Backend (FastAPI): `http://localhost:8001`
+- API Docs: `http://localhost:8001/docs`
+
+**Note:** Port 8001 is used to avoid conflicts with zombie processes on port 8000.
 
 ## Production Build Output
 
@@ -158,3 +160,35 @@ Voice-Flow/
 ├── mac/              # macOS setup scripts
 └── .gitignore
 ```
+
+## Known Issues & Gotchas
+
+### Startup Order
+Electron starts before backend is ready. If hotkey doesn't work, restart Electron after backend fully loads (wait for "PARAKEET Model loaded successfully").
+
+### Killing the App - IMPORTANT
+**DO NOT kill Python or Node processes broadly!** Claude Code uses Python and Node.
+
+**Safe cleanup - ONLY kill Electron:**
+```bash
+# Kill only Electron (the app)
+taskkill /F /IM electron.exe 2>nul
+
+# NEVER do these (kills Claude Code too):
+# taskkill /F /IM python.exe  ❌ WRONG
+# taskkill /F /IM node.exe    ❌ WRONG
+```
+
+If you need to stop the backend, kill only the specific PID on port 8000:
+```bash
+netstat -ano | findstr ":8000"
+taskkill /F /PID <specific_pid>
+```
+
+### Streaming Transcription
+- Yellow text = confirmed (stable words, won't change)
+- Gray text = partial (still processing, may change)
+- Final transcription runs inference on ALL audio when hotkey released to capture words spoken after last streaming update
+
+### API Limits
+`/api/transcriptions` returns max 50 by default. Use `/api/stats` for accurate totals.

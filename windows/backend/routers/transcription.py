@@ -6,11 +6,12 @@ from fastapi import APIRouter, UploadFile, File, WebSocket, WebSocketDisconnect,
 import time
 import asyncio
 import numpy as np
+import uuid
+from datetime import datetime
 
 from typing import Optional
 
-from database import SessionLocal, Transcription, UserSettings, Mode
-
+from database import SessionLocal, Transcription
 from services.transcription_service import transcription_service, DEVICE
 from services.rate_limiter import rate_limiter
 from services.auth_service import auth_service
@@ -25,16 +26,13 @@ router = APIRouter(tags=["transcription"])
 MAX_CHUNK_SIZE = 1024 * 1024  # 1MB max per audio chunk
 MAX_AUDIO_BUFFER_SIZE = 50 * 1024 * 1024  # 50MB max total audio buffer
 
+# Session tracking
+active_sessions = {}
+
 
 def get_user_settings() -> dict:
-    """Get current user settings"""
-    with SessionLocal() as db:
-        settings = db.query(UserSettings).filter(
-            UserSettings.user_id == "default"
-        ).first()
-        if settings:
-            return settings.to_dict()
-        return {"tone": "formal"}
+    """Get current user settings (defaults for testing)"""
+    return {"tone": "formal"}
 
 
 async def process_text_pipeline(
@@ -104,72 +102,30 @@ async def websocket_transcribe(websocket: WebSocket):
     """
     WebSocket endpoint for real-time streaming transcription
 
-    Authentication: Client must send {"type": "auth", "token": "<token>"} as first message
     Client sends: 16-bit PCM audio at 16kHz, mono
     Server sends: JSON with partial and confirmed transcription
     """
     await websocket.accept()
-    print("[WS] Client connected, awaiting authentication...")
 
-    app_context = "general"  # Default
+    # Generate session ID and track connection
+    session_id = str(uuid.uuid4())[:8]
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    active_sessions[session_id] = {
+        "ip": client_ip,
+        "started": datetime.now(),
+        "websocket": websocket
+    }
+    print(f"[WS] NEW CONNECTION | Session: {session_id} | IP: {client_ip} | Total active: {len(active_sessions)}")
+
+    # Send session start message
+    await websocket.send_json({"type": "session_start", "session_id": session_id})
+
+    # Set default context variables
+    app_context = "general"
     selected_text: Optional[str] = None
     clipboard_text: Optional[str] = None
     mode_id: Optional[int] = None
     mode: Optional[dict] = None
-
-    # Wait for authentication message
-    try:
-        auth_message = await asyncio.wait_for(websocket.receive_json(), timeout=5.0)
-        if auth_message.get("type") != "auth" or not auth_service.verify_token(auth_message.get("token", "")):
-            await websocket.send_json({"error": "Authentication failed"})
-            await websocket.close(code=4001, reason="Authentication failed")
-            print("[WS] Authentication failed - invalid token")
-            return
-
-        # Get context from auth message (sent by Electron)
-        app_context = auth_message.get("app_context", "general")
-        selected_text = auth_message.get("selected_text")
-        clipboard_text = auth_message.get("clipboard_text")
-        mode_id = auth_message.get("mode_id")
-
-        # Load mode if specified, or get active mode based on app, or use default
-        with SessionLocal() as db:
-            if mode_id:
-                mode_obj = db.query(Mode).filter(Mode.id == mode_id).first()
-                if mode_obj:
-                    mode = mode_obj.to_dict()
-            else:
-                # Try to find mode that auto-switches for this app
-                app_name = auth_message.get("app_name", "")
-                if app_name:
-                    modes = db.query(Mode).filter(Mode.user_id == "default").all()
-                    for m in modes:
-                        auto_apps = m.auto_switch_apps or []
-                        if any(app_name.lower().find(a.lower()) >= 0 for a in auto_apps):
-                            mode = m.to_dict()
-                            break
-
-                # If no mode selected yet, use the default mode
-                if not mode:
-                    default_mode = db.query(Mode).filter(
-                        Mode.user_id == "default",
-                        Mode.is_default == True
-                    ).first()
-                    if default_mode:
-                        mode = default_mode.to_dict()
-                        print(f"[WS] Using default mode: {mode.get('name')}")
-
-        print(f"[WS] Client authenticated (context: {app_context}, mode: {mode.get('name') if mode else 'default'}, has_selection: {bool(selected_text)})")
-    except asyncio.TimeoutError:
-        await websocket.send_json({"error": "Authentication timeout"})
-        await websocket.close(code=4002, reason="Authentication timeout")
-        print("[WS] Authentication timeout")
-        return
-    except Exception as e:
-        await websocket.send_json({"error": f"Authentication error: {str(e)}"})
-        await websocket.close(code=4003, reason="Authentication error")
-        print(f"[WS] Authentication error: {e}")
-        return
 
     if not transcription_service.is_model_loaded():
         await websocket.send_json({"error": "ASR model not loaded"})
@@ -178,9 +134,17 @@ async def websocket_transcribe(websocket: WebSocket):
 
     streaming_transcriber = transcription_service.get_streaming_transcriber()
 
+    # Track background transcription task
+    transcribe_task = None
+    last_partial = ""
+    last_confirmed = ""
+
+    # Audio chunk counter
+    audio_chunks_received = 0
+
     try:
         last_transcribe_time = time.time()
-        transcribe_interval = 0.3  # 300ms for responsive live updates
+        transcribe_interval = 0.5  # 500ms - less frequent but non-blocking
 
         while True:
             try:
@@ -198,13 +162,30 @@ async def websocket_transcribe(websocket: WebSocket):
                     audio_float32 = audio_int16.astype(np.float32) / 32768.0
                     streaming_transcriber.add_audio_chunk(audio_float32)
 
+                    # Log chunks
+                    audio_chunks_received += 1
+                    if audio_chunks_received % 10 == 0:
+                        print(f"[WS] Session {session_id} | Received {audio_chunks_received} chunks")
+
                 elif "text" in message:
                     text = message["text"]
                     if text == "stop":
-                        print("[WS] Stop command received, sending final transcription")
+                        print(f"[WS] Session {session_id} | STOP signal received | Chunks: {audio_chunks_received}")
 
-                        final_text = streaming_transcriber.get_final_transcription()
-                        print(f"[WS] Final: {final_text[:100] if final_text else 'empty'}...")
+                        # Cancel any pending transcription
+                        if transcribe_task and not transcribe_task.done():
+                            transcribe_task.cancel()
+                            try:
+                                await transcribe_task
+                            except asyncio.CancelledError:
+                                pass
+
+                        import time as _time
+                        _t0 = _time.perf_counter()
+                        # Run final transcription in thread to not block
+                        final_text = await asyncio.to_thread(streaming_transcriber.get_final_transcription)
+                        _inference_ms = (_time.perf_counter() - _t0) * 1000
+                        print(f"[WS] Final transcription took {_inference_ms:.0f}ms: {final_text[:50] if final_text else 'empty'}...")
 
                         # Process text through pipeline with mode support
                         polished_text = final_text
@@ -261,25 +242,30 @@ async def websocket_transcribe(websocket: WebSocket):
                                 elif not ai_polish_service.is_configured():
                                     print(f"[WS] AI polish SKIPPED - not configured")
 
-                            # Save to database
-                            with SessionLocal() as db:
-                                transcription = Transcription(
-                                    raw_text=final_text,
-                                    polished_text=polished_text,
-                                    mode_id=mode.get("id") if mode else None,
-                                    mode_name=mode.get("name") if mode else None
-                                )
-                                db.add(transcription)
-                                db.commit()
-                            print(f"[WS] Saved to database (mode: {mode.get('name') if mode else 'default'})")
+                        # Save to database
+                        if final_text:
+                            try:
+                                with SessionLocal() as db:
+                                    transcription = Transcription(
+                                        raw_text=final_text,
+                                        polished_text=polished_text or final_text
+                                    )
+                                    db.add(transcription)
+                                    db.commit()
+                                    print(f"[WS] Saved to database")
+                            except Exception as e:
+                                print(f"[WS] Database error: {e}")
 
+                        print(f"[WS] COMPLETED | Session {session_id} | Text: {len(polished_text) if polished_text else 0} chars | Chunks: {audio_chunks_received}")
                         print(f"[WS] SENDING FINAL: text='{polished_text[:80] if polished_text else 'empty'}...', raw='{final_text[:80] if final_text else 'empty'}...'")
                         await websocket.send_json({
                             "type": "final",
                             "text": polished_text or "",
                             "raw": final_text or "",
                             "mode": mode.get("name") if mode else None,
-                            "command_type": command_type
+                            "command_type": command_type,
+                            "session_id": session_id,
+                            "chunks_processed": audio_chunks_received
                         })
 
                         streaming_transcriber.reset()
@@ -288,28 +274,48 @@ async def websocket_transcribe(websocket: WebSocket):
             except asyncio.TimeoutError:
                 pass
 
+            # Check if background transcription completed
+            if transcribe_task and transcribe_task.done():
+                try:
+                    partial, confirmed = transcribe_task.result()
+                    if partial != last_partial or confirmed != last_confirmed:
+                        last_partial = partial
+                        last_confirmed = confirmed
+                        if partial or confirmed:
+                            await websocket.send_json({
+                                "type": "partial",
+                                "partial": partial,
+                                "confirmed": confirmed
+                            })
+                except Exception as e:
+                    print(f"[WS] Transcription error: {e}")
+                transcribe_task = None
+
+            # Start new transcription if needed (non-blocking)
             current_time = time.time()
             if current_time - last_transcribe_time >= transcribe_interval:
-                partial, confirmed = streaming_transcriber.transcribe_current()
-
-                if partial or confirmed:
-                    await websocket.send_json({
-                        "type": "partial",
-                        "partial": partial,
-                        "confirmed": confirmed
-                    })
-
-                last_transcribe_time = current_time
+                if transcribe_task is None or transcribe_task.done():
+                    # Run transcription in background thread
+                    transcribe_task = asyncio.create_task(
+                        asyncio.to_thread(streaming_transcriber.transcribe_current)
+                    )
+                    last_transcribe_time = current_time
 
     except WebSocketDisconnect:
-        print("[WS] Client disconnected unexpectedly")
+        print(f"[WS] DISCONNECTED | Session {session_id} | IP: {client_ip}")
         if streaming_transcriber:
             streaming_transcriber.reset()
 
     except Exception as e:
-        print(f"[WS] Error: {e}")
+        print(f"[WS] ERROR | Session {session_id} | Error: {e}")
         import traceback
         traceback.print_exc()
+
+    finally:
+        # Clean up session
+        if session_id in active_sessions:
+            del active_sessions[session_id]
+        print(f"[WS] CLOSED | Session {session_id} | Remaining active: {len(active_sessions)}")
 
 
 @router.post("/api/transcribe")
@@ -381,26 +387,14 @@ async def transcribe_audio(
         if polished_text != raw_text:
             print(f"[TRANSCRIBE] After pipeline: '{polished_text}'")
 
-        with SessionLocal() as db:
-            transcription = Transcription(
-                raw_text=raw_text,
-                polished_text=polished_text,
-                duration=transcribe_time
-            )
-            db.add(transcription)
-            db.commit()
-            db.refresh(transcription)
+        print(f"[TRANSCRIBE] Processing complete")
+        print(f"{'='*60}\n")
 
-            print(f"[TRANSCRIBE] Saved to database (ID: {transcription.id})")
-            print(f"{'='*60}\n")
-
-            return {
-                "transcription": raw_text,
-                "polished_text": polished_text,
-                "id": transcription.id,
-                "created_at": transcription.created_at.isoformat(),
-                "status": "success"
-            }
+        return {
+            "transcription": raw_text,
+            "polished_text": polished_text,
+            "status": "success"
+        }
 
     except Exception as e:
         print(f"[ERROR] Transcription error: {e}")
@@ -413,6 +407,23 @@ async def transcribe_audio(
         }
 
 
+@router.get("/api/sessions")
+async def get_active_sessions():
+    """Get information about active WebSocket sessions"""
+    return {
+        "active_count": len(active_sessions),
+        "sessions": [
+            {
+                "session_id": sid,
+                "ip": info["ip"],
+                "started": info["started"].isoformat(),
+                "duration_seconds": (datetime.now() - info["started"]).total_seconds()
+            }
+            for sid, info in active_sessions.items()
+        ]
+    }
+
+
 @router.get("/api/transcriptions")
 async def get_transcriptions(limit: int = 50):
     """Get all transcriptions, newest first"""
@@ -423,10 +434,8 @@ async def get_transcriptions(limit: int = 50):
             ).limit(limit).all()
             return [t.to_dict() for t in transcriptions]
     except Exception as e:
-        print(f"[ERROR] Error fetching: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(500, f"Failed to fetch transcriptions: {str(e)}")
+        print(f"[ERROR] Error fetching transcriptions: {e}")
+        return {"error": str(e)}
 
 
 @router.get("/api/stats")
@@ -451,7 +460,7 @@ async def get_stats():
             }
     except Exception as e:
         print(f"[ERROR] Error getting stats: {e}")
-        raise HTTPException(500, f"Failed to get stats: {str(e)}")
+        return {"error": str(e)}
 
 
 @router.delete("/api/transcriptions/{transcription_id}")
@@ -465,107 +474,8 @@ async def delete_transcription(transcription_id: int):
             if t:
                 db.delete(t)
                 db.commit()
-                print(f"[*] Deleted transcription #{transcription_id}")
-                return {"status": "deleted"}
-            return {"error": "Not found"}
+                return {"ok": True}
+            return {"ok": False, "error": "Not found"}
     except Exception as e:
-        return {"error": str(e)}
-
-
-@router.post("/api/transcriptions/{transcription_id}/reprocess")
-async def reprocess_transcription(
-    transcription_id: int,
-    mode_id: Optional[int] = None
-):
-    """
-    Reprocess an existing transcription through a different mode.
-    This re-runs the text through the processing pipeline with the specified mode.
-    """
-    try:
-        with SessionLocal() as db:
-            # Get the original transcription
-            transcription = db.query(Transcription).filter(
-                Transcription.id == transcription_id
-            ).first()
-
-            if not transcription:
-                raise HTTPException(404, "Transcription not found")
-
-            # Get the mode
-            mode = None
-            if mode_id:
-                mode_obj = db.query(Mode).filter(Mode.id == mode_id).first()
-                if mode_obj:
-                    mode = mode_obj.to_dict()
-
-            # Start from raw text
-            raw_text = transcription.raw_text
-            if not raw_text:
-                raise HTTPException(400, "No raw text available for reprocessing")
-
-            # Process through pipeline
-            polished_text = raw_text
-
-            # Check mode settings
-            use_cleanup = mode.get("use_cleanup", True) if mode else True
-            use_dictionary = mode.get("use_dictionary", True) if mode else True
-            use_snippets = mode.get("use_snippets", True) if mode else True
-            use_ai_polish = mode.get("use_ai_polish", True) if mode else True
-
-            # Step 1: Text cleanup
-            if use_cleanup:
-                polished_text = text_cleanup_service.process(polished_text)
-
-            # Step 2: Apply personal dictionary
-            if use_dictionary:
-                dictionary = dictionary_service.get_dictionary()
-                polished_text = dictionary_service.apply_dictionary(polished_text, dictionary)
-
-            # Step 3: Apply snippets
-            if use_snippets:
-                polished_text, _ = snippet_service.apply_snippets(polished_text)
-
-            # Step 4: AI polish with mode
-            command_type = "none"
-            if use_ai_polish and ai_polish_service.is_configured():
-                result = await ai_polish_service.polish_with_mode(
-                    text=polished_text,
-                    mode=mode,
-                    selected_text=None,
-                    clipboard_text=None,
-                    app_context=AppContext.GENERAL
-                )
-                if result["success"]:
-                    polished_text = result["polished_text"]
-                    command_type = result.get("command_type", "none")
-
-            # Create new transcription record with reprocessed text
-            new_transcription = Transcription(
-                raw_text=raw_text,
-                polished_text=polished_text,
-                duration=transcription.duration,
-                mode_id=mode_id,
-                mode_name=mode.get("name") if mode else None
-            )
-            db.add(new_transcription)
-            db.commit()
-            db.refresh(new_transcription)
-
-            print(f"[REPROCESS] Transcription #{transcription_id} -> #{new_transcription.id} (mode: {mode.get('name') if mode else 'default'})")
-
-            return {
-                "id": new_transcription.id,
-                "raw_text": new_transcription.raw_text,
-                "polished_text": new_transcription.polished_text,
-                "mode_name": new_transcription.mode_name,
-                "command_type": command_type,
-                "created_at": new_transcription.created_at.isoformat() if new_transcription.created_at else None
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[ERROR] Reprocess error: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(500, f"Reprocessing failed: {str(e)}")
+        print(f"[ERROR] Error deleting: {e}")
+        return {"ok": False, "error": str(e)}

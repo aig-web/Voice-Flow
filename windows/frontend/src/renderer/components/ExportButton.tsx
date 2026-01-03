@@ -4,7 +4,7 @@ import { AlertDialog } from './AlertDialog'
 
 type ExportFormat = 'pdf' | 'csv' | 'json'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
 
 export function ExportButton() {
   const [isOpen, setIsOpen] = useState(false)

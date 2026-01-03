@@ -4,6 +4,7 @@ Endpoints for API health checks and status
 """
 from fastapi import APIRouter
 import torch
+from datetime import datetime
 
 from services.transcription_service import transcription_service, DEVICE
 
@@ -40,4 +41,24 @@ async def test_endpoint():
     return {
         "message": "Backend connection successful",
         "data": {"test": True}
+    }
+
+
+@router.get("/api/server-stats")
+async def get_server_stats():
+    """Get server statistics for monitoring active sessions"""
+    from routers.transcription import active_sessions
+
+    return {
+        "status": "running",
+        "active_connections": len(active_sessions),
+        "sessions": [
+            {
+                "id": sid,
+                "ip": info["ip"],
+                "connected_at": info["started"].isoformat(),
+                "duration_seconds": (datetime.now() - info["started"]).total_seconds()
+            }
+            for sid, info in active_sessions.items()
+        ]
     }

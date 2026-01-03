@@ -9,7 +9,7 @@ import { OnboardingWizard } from './components/OnboardingWizard'
 import { useBackgroundRecorder } from './hooks/useBackgroundRecorder'
 import clsx from 'clsx'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
 
 interface UserProfile {
   name: string
@@ -59,10 +59,9 @@ function App() {
   // Fetch current hotkey from settings
   const fetchHotkey = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/settings`)
-      const data = await response.json()
-      if (data.record_hotkey) {
-        setCurrentHotkey(formatHotkeyDisplay(data.record_hotkey))
+      const result = await window.voiceFlow.getSettings()
+      if (result.ok && result.data?.record_hotkey) {
+        setCurrentHotkey(formatHotkeyDisplay(result.data.record_hotkey))
       }
     } catch (error) {
       console.error('Error fetching hotkey:', error)

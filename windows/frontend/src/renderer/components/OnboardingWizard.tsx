@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import clsx from 'clsx'
 import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE } from '../i18n/languages'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
 
 interface OnboardingWizardProps {
   onComplete: () => void

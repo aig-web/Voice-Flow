@@ -101,6 +101,27 @@ interface VoiceFlowAPI {
   /** Set active mode by ID */
   setActiveMode: (modeId: number | null) => Promise<{ ok: boolean }>
 
+  /** Delete a transcription by ID */
+  deleteTranscription: (id: number) => Promise<{ ok: boolean; error?: string }>
+
+  /** Add dictionary entry */
+  addDictionaryEntry: (mishearing: string, correction: string) => Promise<ApiResult<any>>
+
+  /** Remove dictionary entry */
+  removeDictionaryEntry: (mishearing: string) => Promise<{ ok: boolean; error?: string }>
+
+  /** Get all snippets */
+  getSnippets: () => Promise<ApiResult<any>>
+
+  /** Add a snippet */
+  addSnippet: (trigger: string, content: string) => Promise<ApiResult<any>>
+
+  /** Delete a snippet by ID */
+  deleteSnippet: (id: number) => Promise<{ ok: boolean; error?: string }>
+
+  /** Export transcriptions */
+  exportTranscriptions: (format: string, transcriptionIds: number[]) => Promise<ApiResult<any>>
+
   /** Send recording completion to main process */
   sendRecordingComplete: (text: string) => void
 
@@ -180,6 +201,24 @@ const voiceFlowAPI: VoiceFlowAPI = {
   getActiveMode: (appName?: string) => ipcRenderer.invoke('vf:get-active-mode', appName),
 
   setActiveMode: (modeId: number | null) => ipcRenderer.invoke('vf:set-active-mode', modeId),
+
+  deleteTranscription: (id: number) => ipcRenderer.invoke('vf:delete-transcription', id),
+
+  addDictionaryEntry: (mishearing: string, correction: string) =>
+    ipcRenderer.invoke('vf:add-dictionary-entry', mishearing, correction),
+
+  removeDictionaryEntry: (mishearing: string) =>
+    ipcRenderer.invoke('vf:remove-dictionary-entry', mishearing),
+
+  getSnippets: () => ipcRenderer.invoke('vf:get-snippets'),
+
+  addSnippet: (trigger: string, content: string) =>
+    ipcRenderer.invoke('vf:add-snippet', trigger, content),
+
+  deleteSnippet: (id: number) => ipcRenderer.invoke('vf:delete-snippet', id),
+
+  exportTranscriptions: (format: string, transcriptionIds: number[]) =>
+    ipcRenderer.invoke('vf:export-transcriptions', format, transcriptionIds),
 
   sendRecordingComplete: (text: string) => {
     ipcRenderer.send('vf:recording-complete', { text })

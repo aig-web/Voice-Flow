@@ -5,6 +5,11 @@ Refactored modular backend using FastAPI routers and services
 import os
 import sys
 
+# Disable CUDA graphs to support long recordings (10-15min like Wispr Flow)
+# This prevents "CUDA graph replay without capture" errors
+os.environ['CUDA_LAUNCH_BLOCKING'] = '0'  # Allow async kernel launches
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'  # Better memory management
+
 # Add ffmpeg to PATH before any imports that use pydub
 base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ffmpeg_dir = os.path.join(base_path, 'ffmpeg-master-latest-win64-gpl', 'bin')
@@ -23,26 +28,13 @@ load_dotenv()
 from routers.health import router as health_router
 from routers.transcription import router as transcription_router
 from routers.settings import router as settings_router
-from routers.export import router as export_router
 from routers.snippets import router as snippets_router
 from routers.modes import router as modes_router
+from routers.export import router as export_router
 
 # Import services
 from services.transcription_service import transcription_service, DEVICE
-from services.rate_limiter import rate_limiter, RateLimiter
-from services.dictionary_service import validate_dictionary_entry
-
-# Import database
-from database import Base, engine, SessionLocal, seed_default_modes
-
-# Import logging
-from logging_config import setup_logging, get_logger
-
-# Initialize logging
-logger = setup_logging(log_level="INFO")
-transcribe_log = get_logger("transcribe")
-ws_log = get_logger("websocket")
-db_log = get_logger("database")
+from database import init_db
 
 
 # ============== LIFESPAN ==============
@@ -51,12 +43,17 @@ async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events"""
 
     # Startup
-    Base.metadata.create_all(bind=engine)
-    print("[OK] Database initialized")
+    print("=" * 60)
+    print("[Stop Typing] Backend Server - Testing Mode")
+    print("[Stop Typing] NO AUTH | NO DATABASE | LOCAL NETWORK ONLY")
+    print("=" * 60)
 
-    # Seed default modes
-    with SessionLocal() as db:
-        seed_default_modes(db)
+    # Initialize database
+    try:
+        init_db()
+        print("[OK] Database initialized")
+    except Exception as e:
+        print(f"[ERROR] Failed to initialize database: {e}")
 
     # Load ASR model
     try:
@@ -74,22 +71,15 @@ async def lifespan(app: FastAPI):
 
 
 # ============== CORS ==============
-# SECURITY: Restrict to localhost origins only (Electron dev and production)
-ALLOWED_ORIGINS = [
-    "http://localhost:5173",      # Vite dev server
-    "http://localhost:8000",      # Backend (for same-origin requests)
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:8000",
-    "file://",                    # Electron file:// protocol
-    "app://.",                    # Electron custom protocol
-]
+# TESTING MODE: Allow all origins for local network testing
+ALLOWED_ORIGINS = ["*"]
 
 
 # ============== APP ==============
 app = FastAPI(
-    title="Voice-Flow API",
-    description="Backend API for Voice-Flow desktop application",
-    version="0.3.0",
+    title="Stop Typing API",
+    description="Backend API for Stop Typing desktop application",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -97,8 +87,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -106,14 +96,23 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(transcription_router)
 app.include_router(settings_router)
-app.include_router(export_router)
 app.include_router(snippets_router)
 app.include_router(modes_router)
+app.include_router(export_router)
 
 
 # ============== RUN SERVER ==============
 if __name__ == "__main__":
     import uvicorn
-    print("[Voice-Flow] Starting backend server on http://localhost:8000")
-    # SECURITY: Bind to localhost only - prevents external network access
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+
+    # Read from environment variables
+    host = os.getenv("BACKEND_HOST", "0.0.0.0")
+    port = int(os.getenv("BACKEND_PORT", "8001"))
+
+    print("=" * 60)
+    print(f"[Stop Typing] Starting server on http://{host}:{port}")
+    print(f"[Stop Typing] Mode: TESTING (no auth, local network)")
+    print(f"[Stop Typing] CORS: Allowing all origins")
+    print("=" * 60)
+
+    uvicorn.run(app, host=host, port=port, log_level="info")

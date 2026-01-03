@@ -2,8 +2,6 @@ import React, { useEffect, useState } from 'react'
 import clsx from 'clsx'
 import { AlertDialog } from './AlertDialog'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-
 export function Dictionary() {
   const [dictionary, setDictionary] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
@@ -19,9 +17,12 @@ export function Dictionary() {
 
   const fetchDictionary = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/settings`)
-      const data = await response.json()
-      setDictionary(data.personal_dictionary || {})
+      const result = await window.voiceFlow.getSettings()
+      if (result.ok && result.data) {
+        const dictString = result.data.personal_dictionary || '{}'
+        const dict = typeof dictString === 'string' ? JSON.parse(dictString) : dictString
+        setDictionary(dict)
+      }
     } catch (error) {
       console.error('Error fetching dictionary:', error)
     } finally {
@@ -43,23 +44,15 @@ export function Dictionary() {
 
     try {
       setIsAdding(true)
-      const response = await fetch(`${API_BASE_URL}/api/settings/dictionary/add`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mishearing: newMishearing,
-          correction: newCorrection
-        })
-      })
+      const result = await window.voiceFlow.addDictionaryEntry(newMishearing, newCorrection)
 
-      if (response.ok) {
-        const data = await response.json()
-        setDictionary(data.dictionary)
+      if (result.ok && result.data) {
+        setDictionary(result.data.dictionary)
         setNewMishearing('')
         setNewCorrection('')
         setAlert({ title: 'Success', message: 'Word added to dictionary!' })
       } else {
-        setAlert({ title: 'Error', message: 'Failed to add entry' })
+        setAlert({ title: 'Error', message: result.error || 'Failed to add entry' })
       }
     } catch (error) {
       console.error('Error adding entry:', error)
@@ -71,12 +64,9 @@ export function Dictionary() {
 
   const handleRemoveEntry = async (mishearing: string) => {
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/settings/dictionary/${encodeURIComponent(mishearing)}`,
-        { method: 'DELETE' }
-      )
+      const result = await window.voiceFlow.removeDictionaryEntry(mishearing)
 
-      if (response.ok) {
+      if (result.ok) {
         const newDict = { ...dictionary }
         delete newDict[mishearing]
         setDictionary(newDict)
