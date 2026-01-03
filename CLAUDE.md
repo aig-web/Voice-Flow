@@ -6,19 +6,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Voice-Flow is a desktop voice transcription application that captures audio via global hotkey, transcribes using NVIDIA Parakeet TDT 0.6B v2 (local ASR), and injects text into the active window.
 
-## Platform-Specific Code
+## Project Structure
 
-This project is organized by platform. **Always work in the appropriate platform directory:**
+This project uses a **shared backend** for both platforms:
 
-| Platform | Directory | CLAUDE.md |
-|----------|-----------|-----------|
-| Windows | `windows/` | `windows/CLAUDE.md` |
-| macOS | `mac/` | `mac/CLAUDE.md` |
+```
+Voice-Flow/
+├── backend/          # SHARED FastAPI backend (works on Windows, macOS, Linux)
+│   ├── routers/     # API endpoints
+│   ├── services/    # Business logic
+│   └── database.py  # SQLAlchemy models
+├── windows/         # Windows-specific code
+│   ├── app/        # Electron (Windows)
+│   └── frontend/   # React + Vite
+└── mac/            # macOS-specific code
+    ├── app/        # Electron (macOS)
+    └── frontend/   # React + Vite
+```
 
-Each platform directory contains the full stack:
-- `app/` - Electron main process
-- `backend/` - FastAPI + NeMo ASR
-- `frontend/` - React + Vite
+**Backend:** Cross-platform, auto-detects CUDA (Windows/Linux), MPS (Apple Silicon), or CPU
+**Frontend/Electron:** Platform-specific (different hotkeys, text injection methods)
 
 **IMPORTANT:** When working on platform-specific code, always read the platform's CLAUDE.md for detailed instructions.
 
@@ -26,16 +33,28 @@ Each platform directory contains the full stack:
 
 ### Windows
 ```bash
-cd windows
+# Install backend (one-time)
+cd backend
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+
+# Install and run
+cd ../windows
 npm run install:all
-cd backend && python -m venv venv && venv\Scripts\activate && pip install -r requirements.txt
 npm run dev
 ```
 
 ### macOS
 ```bash
-cd mac
-./setup.sh   # First-time setup
+# Install backend (one-time)
+cd backend
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+
+# Install and run
+cd ../mac
+npm run install:all
 npm run dev
 ```
 

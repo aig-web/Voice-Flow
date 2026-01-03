@@ -1,7 +1,6 @@
 """
-Transcription Service - macOS Version
+Transcription Service
 Handles ASR model loading, streaming transcription, and audio processing
-Supports MPS (Apple Silicon) and CPU - NO CUDA
 """
 import os
 import sys
@@ -24,11 +23,13 @@ logger = logging.getLogger(__name__)
 
 # ============== CACHE DIRECTORIES ==============
 def setup_cache_dirs():
-    """Set up cache directories for model and temp files"""
+    """Set up cache directories to avoid C: drive space issues"""
     cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache")
     os.environ['HF_HOME'] = os.path.join(cache_dir, "huggingface")
     os.environ['NEMO_CACHE_DIR'] = os.path.join(cache_dir, "nemo")
     os.environ['TMPDIR'] = os.path.join(cache_dir, "tmp")
+    os.environ['TEMP'] = os.path.join(cache_dir, "tmp")
+    os.environ['TMP'] = os.path.join(cache_dir, "tmp")
 
     # Create cache directories
     for d in [os.environ['HF_HOME'], os.environ['NEMO_CACHE_DIR'], os.environ['TMPDIR']]:
@@ -38,25 +39,31 @@ def setup_cache_dirs():
 # ============== CONFIGURATION ==============
 PARAKEET_MODEL_NAME = "nvidia/parakeet-tdt-0.6b-v2"
 
-# Device selection: MPS (Apple Silicon) > CPU
-# macOS does NOT support CUDA - NVIDIA GPUs are not available on Mac
+# NeMo Parakeet has a hard limit of 40 seconds per inference
+# We chunk audio at 30 seconds to stay well within limits (like Wispr Flow)
+MAX_CHUNK_DURATION = 30.0  # seconds
+CHUNK_OVERLAP = 2.0  # seconds overlap to avoid cutting words
+
+# Device selection: CUDA (NVIDIA) > MPS (Apple Silicon) > CPU
 def get_device():
-    """Get the best available device for macOS"""
-    # Check for MPS (Metal Performance Shaders) - Apple Silicon M1/M2/M3/M4
-    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-        try:
-            # Test MPS availability
-            test_tensor = torch.zeros(1, device='mps')
-            del test_tensor
-            return "mps"
-        except Exception as e:
-            print(f"[DEVICE] MPS available but failed test: {e}")
-            return "cpu"
-    return "cpu"
+    if torch.cuda.is_available():
+        # Force PyTorch to use discrete GPU (RTX 3060), not integrated GPU
+        torch.cuda.set_device(0)  # Use GPU 0 (usually discrete GPU)
+        gpu_name = torch.cuda.get_device_name(0)
+        print(f"[GPU] Using: {gpu_name}")
+
+        # Verify it's the RTX 3060
+        if "3060" not in gpu_name and "RTX" not in gpu_name:
+            print(f"[GPU WARNING] Expected RTX 3060, got: {gpu_name}")
+
+        return "cuda:0"  # Explicitly use cuda:0
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return "mps"
+    else:
+        return "cpu"
 
 DEVICE = get_device()
-# MPS doesn't support float16 well for all operations, use float32
-MODEL_PRECISION = "fp32"
+MODEL_PRECISION = "fp16" if "cuda" in DEVICE else "fp32"
 
 
 def get_base_path():
@@ -70,8 +77,8 @@ def get_base_path():
 class StreamingTranscriber:
     """Real-time streaming transcription using Parakeet TDT"""
 
-    # Maximum audio buffer size: 5 minutes at 16kHz = 4,800,000 samples
-    MAX_BUFFER_SAMPLES = 16000 * 60 * 5  # 5 minutes
+    # Maximum audio buffer size: 2 minutes at 16kHz (optimized for 6GB VRAM)
+    MAX_BUFFER_SAMPLES = 16000 * 60 * 2  # 2 minutes (reduced from 5 to save RAM)
 
     def __init__(self, model, sample_rate=16000, chunk_duration_ms=500):
         self.model = model
@@ -84,7 +91,7 @@ class StreamingTranscriber:
         self.confirmed_text = ""
         self.confirmed_word_count = 0  # Track how many words are locked/confirmed
         self.word_counts = {}
-        self.min_word_count = 4  # Word must appear 4 times to be confirmed
+        self.min_word_count = 4  # Increased from 2 - word must appear 4 times to be confirmed
 
     def reset(self):
         """Reset state for new recording"""
@@ -128,8 +135,8 @@ class StreamingTranscriber:
 
             try:
                 with torch.inference_mode():
-                    # MPS doesn't need autocast like CUDA
-                    output = self.model.transcribe([tmp_path], batch_size=1, verbose=False)
+                    with torch.cuda.amp.autocast(enabled=(DEVICE == "cuda")):
+                        output = self.model.transcribe([tmp_path], batch_size=1, verbose=False)
 
                 if output and len(output) > 0:
                     text = self._extract_text(output[0])
@@ -189,38 +196,148 @@ class StreamingTranscriber:
         return "", self.confirmed_text
 
     def get_final_transcription(self) -> str:
-        """Get final transcription when recording stops"""
+        """
+        Get final transcription when recording stops.
+
+        ALWAYS runs inference on all accumulated audio to capture any words
+        spoken after the last streaming transcription (which runs every 500ms).
+
+        For long recordings (>30s), automatically chunks audio to avoid model limits.
+        """
+        import time as _time
+        _t0 = _time.perf_counter()
+
         audio_duration = len(self.accumulated_audio) / self.sample_rate if self.sample_rate > 0 else 0
-        print(f"[FINAL] Audio samples: {len(self.accumulated_audio)}, duration: {audio_duration:.2f}s")
+
+        # Audio too short - nothing to transcribe
         if len(self.accumulated_audio) < self.sample_rate * 0.3:
-            print(f"[FINAL] Audio too short (< 0.3s), returning empty")
+            print(f"[FINAL] Audio too short ({audio_duration:.2f}s < 0.3s), returning empty")
             return ""
 
-        try:
-            import soundfile as sf
+        print(f"[FINAL] Running final inference on {audio_duration:.2f}s audio...")
 
+        try:
+            # For long audio, use chunking to avoid exceeding model's 40s limit
+            if audio_duration > MAX_CHUNK_DURATION:
+                print(f"[FINAL] Long recording detected ({audio_duration:.1f}s), using chunking...")
+                chunks = self._chunk_long_audio(self.accumulated_audio, self.sample_rate)
+                merged_text = ""
+
+                for i, chunk in enumerate(chunks):
+                    chunk_duration = len(chunk) / self.sample_rate
+                    print(f"[FINAL] Processing chunk {i+1}/{len(chunks)} ({chunk_duration:.1f}s)...")
+
+                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+                        sf.write(tmp_file.name, chunk, self.sample_rate)
+                        tmp_path = tmp_file.name
+
+                    try:
+                        with torch.inference_mode():
+                            with torch.cuda.amp.autocast(enabled=(DEVICE == "cuda")):
+                                # Freeze encoder to prevent NeMo's unfreeze error
+                                try:
+                                    if hasattr(self.model, 'encoder'):
+                                        self.model.encoder.freeze()
+                                except Exception:
+                                    pass  # If freeze fails, continue anyway
+
+                                try:
+                                    output = self.model.transcribe([tmp_path], batch_size=1, verbose=False)
+                                except ValueError as e:
+                                    # Handle NeMo's unfreeze bug gracefully
+                                    if "Cannot unfreeze" in str(e):
+                                        print(f"[FINAL] NeMo unfreeze error (ignoring, non-critical)")
+                                        output = []
+                                    else:
+                                        raise
+
+                        if output and len(output) > 0:
+                            chunk_text = self._extract_text(output[0])
+                            chunk_text = self._clean_text(chunk_text)
+                            merged_text = merge_text(merged_text, chunk_text, overlap_words=5)
+                    finally:
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+
+                _ms = (_time.perf_counter() - _t0) * 1000
+                print(f"[FINAL] Chunked inference took {_ms:.0f}ms: {merged_text[:50] if merged_text else 'empty'}...")
+                return merged_text
+
+            # Short audio - process normally without chunking
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
                 sf.write(tmp_file.name, self.accumulated_audio, self.sample_rate)
                 tmp_path = tmp_file.name
 
             try:
                 with torch.inference_mode():
-                    output = self.model.transcribe([tmp_path], batch_size=1, verbose=False)
+                    with torch.cuda.amp.autocast(enabled=(DEVICE == "cuda")):
+                        # Freeze encoder to prevent NeMo's unfreeze error
+                        try:
+                            if hasattr(self.model, 'encoder'):
+                                self.model.encoder.freeze()
+                        except Exception:
+                            pass  # If freeze fails, continue anyway
 
+                        try:
+                            output = self.model.transcribe([tmp_path], batch_size=1, verbose=False)
+                        except ValueError as e:
+                            # Handle NeMo's unfreeze bug gracefully
+                            if "Cannot unfreeze" in str(e):
+                                print(f"[FINAL] NeMo unfreeze error (ignoring, non-critical)")
+                                output = []
+                            else:
+                                raise
+
+                _ms = (_time.perf_counter() - _t0) * 1000
                 if output and len(output) > 0:
                     text = self._extract_text(output[0])
-                    return self._clean_text(text)
-
+                    text = self._clean_text(text)
+                    print(f"[FINAL] Inference took {_ms:.0f}ms: {text[:50] if text else 'empty'}...")
+                    return text
             finally:
                 try:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
-
         except Exception as e:
-            print(f"[STREAMING] Final error: {e}")
+            print(f"[FINAL] Error: {e}")
+            import traceback
+            traceback.print_exc()
 
-        return self.last_transcription
+        return ""
+
+    def _chunk_long_audio(self, audio: np.ndarray, sample_rate: int) -> list[np.ndarray]:
+        """
+        Split long audio into chunks for StreamingTranscriber.
+
+        Args:
+            audio: Audio array
+            sample_rate: Sample rate
+
+        Returns:
+            List of audio chunks
+        """
+        audio_duration = len(audio) / sample_rate
+        chunk_samples = int(MAX_CHUNK_DURATION * sample_rate)
+        overlap_samples = int(CHUNK_OVERLAP * sample_rate)
+        stride_samples = chunk_samples - overlap_samples
+
+        chunks = []
+        start_idx = 0
+
+        while start_idx < len(audio):
+            end_idx = min(start_idx + chunk_samples, len(audio))
+            chunk = audio[start_idx:end_idx]
+            chunks.append(chunk)
+            start_idx += stride_samples
+            if end_idx >= len(audio):
+                break
+
+        chunk_durations = [len(c) / sample_rate for c in chunks]
+        print(f"[FINAL] Split {audio_duration:.1f}s into {len(chunks)} chunks: {chunk_durations}")
+        return chunks
 
     def _extract_text(self, output) -> str:
         """Extract text from model output"""
@@ -250,45 +367,57 @@ class TranscriptionService:
         self.device = torch.device(DEVICE)
 
     def load_model(self):
-        """Load Parakeet ASR model with warmup"""
+        """Load Parakeet ASR model with warmup (optimized for 6GB VRAM)"""
         import nemo.collections.asr as nemo_asr
 
-        print(f"[PARAKEET] Loading model on {DEVICE}...")
-        if DEVICE == "mps":
-            print("[PARAKEET] Using Apple Silicon MPS acceleration")
-        else:
-            print("[PARAKEET] Using CPU (no GPU acceleration)")
-
+        print(f"[PARAKEET] Loading model on {DEVICE} with FP16 precision...")
         warnings.filterwarnings('ignore')
 
+        # Aggressive memory cleanup before loading
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+
         with torch.inference_mode():
-            # Load model - will be on CPU initially
+            dtype = torch.float16 if MODEL_PRECISION == "fp16" else torch.float32
             model = nemo_asr.models.ASRModel.from_pretrained(
                 PARAKEET_MODEL_NAME,
-                map_location='cpu'  # Load to CPU first
+                map_location=DEVICE
             )
+            if DEVICE == "cuda":
+                model = model.to(dtype=dtype)
+                # Disable CUDA graphs to prevent crashes on long recordings (like Wispr Flow)
+                # Trade: Slightly slower inference, but stable for 10-15min recordings
+                torch.backends.cudnn.benchmark = False
+                torch.backends.cudnn.deterministic = True
+                # Disable CUDA graph capture (causes "replay without capture" errors)
+                torch.cuda.set_sync_debug_mode(0)  # Disable graph debugging
 
-            # Move to MPS if available
-            if DEVICE == "mps":
-                try:
-                    model = model.to('mps')
-                    print("[PARAKEET] Model moved to MPS")
-                except Exception as e:
-                    print(f"[PARAKEET] Failed to move to MPS, using CPU: {e}")
-                    self.device = torch.device('cpu')
+                # CRITICAL: Explicitly disable CUDA graphs in the decoder
+                if hasattr(model, 'decoding') and hasattr(model.decoding, 'decoding'):
+                    if hasattr(model.decoding.decoding, '_decoding_computer'):
+                        model.decoding.decoding._decoding_computer.use_cuda_graphs = False
+                        print("[PARAKEET] CUDA graphs disabled in decoder")
 
             model.eval()
 
         gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            # Print VRAM usage
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved = torch.cuda.memory_reserved() / 1024**3
+            print(f"[PARAKEET] VRAM: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
         self.model = model
-        print(f"[PARAKEET] Model loaded successfully on {DEVICE}")
+        print(f"[PARAKEET] Model loaded successfully on {DEVICE} (FP16)")
 
-        # Warmup: run a tiny inference to avoid first-call latency
+        # Warmup: run a tiny inference to avoid first-call CUDA overhead
         self._warmup_model()
 
     def _warmup_model(self):
-        """Run warmup inference to initialize and avoid first-call latency"""
+        """Run warmup inference to initialize CUDA graphs and avoid first-call latency"""
         try:
             t0 = time.perf_counter()
             # 0.5s of silence at 16kHz
@@ -299,9 +428,109 @@ class TranscriptionService:
         except Exception as e:
             print(f"[PARAKEET] Model warmup failed: {e}")
 
+    def _chunk_audio(self, audio_float32: np.ndarray, sample_rate: int = 16000) -> list[np.ndarray]:
+        """
+        Split long audio into overlapping chunks to stay within model's 40s limit.
+
+        Uses 30-second chunks with 2-second overlap to:
+        - Avoid exceeding NeMo's 40s max_duration
+        - Prevent cutting words mid-sentence
+        - Enable processing of 10-15 minute recordings (like Wispr Flow)
+
+        Args:
+            audio_float32: Audio array (dtype float32)
+            sample_rate: Sample rate (default 16000 Hz)
+
+        Returns:
+            List of audio chunks, each <= 30 seconds
+        """
+        audio_duration = len(audio_float32) / sample_rate
+
+        # No chunking needed for short audio
+        if audio_duration <= MAX_CHUNK_DURATION:
+            return [audio_float32]
+
+        chunk_samples = int(MAX_CHUNK_DURATION * sample_rate)
+        overlap_samples = int(CHUNK_OVERLAP * sample_rate)
+        stride_samples = chunk_samples - overlap_samples
+
+        chunks = []
+        start_idx = 0
+
+        while start_idx < len(audio_float32):
+            end_idx = min(start_idx + chunk_samples, len(audio_float32))
+            chunk = audio_float32[start_idx:end_idx]
+            chunks.append(chunk)
+
+            # Move to next chunk with overlap
+            start_idx += stride_samples
+
+            # Stop if we've covered all audio
+            if end_idx >= len(audio_float32):
+                break
+
+        chunk_durations = [len(c) / sample_rate for c in chunks]
+        print(f"[CHUNKING] Split {audio_duration:.1f}s audio into {len(chunks)} chunks: {chunk_durations}")
+        return chunks
+
+    def _transcribe_chunked(self, audio_float32: np.ndarray, sample_rate: int = 16000) -> str:
+        """
+        Transcribe long audio by splitting into chunks and merging results.
+
+        Args:
+            audio_float32: Long audio array (> 30 seconds)
+            sample_rate: Sample rate (default 16000 Hz)
+
+        Returns:
+            Merged transcription text
+        """
+        chunks = self._chunk_audio(audio_float32, sample_rate)
+        merged_text = ""
+
+        for i, chunk in enumerate(chunks):
+            chunk_duration = len(chunk) / sample_rate
+            print(f"[CHUNKING] Processing chunk {i+1}/{len(chunks)} ({chunk_duration:.1f}s)...")
+
+            try:
+                # Transcribe this chunk using the single-chunk method
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
+                    sf.write(tmp_file.name, chunk, samplerate=sample_rate, format='WAV', subtype='PCM_16')
+                    tmp_file.flush()
+                    tmp_file.close()
+
+                    with torch.inference_mode():
+                        output = self.model.transcribe([tmp_file.name], batch_size=1, verbose=False)
+
+                    chunk_text = self._extract_and_clean_text(output)
+
+                    # Merge with existing text, handling overlap intelligently
+                    merged_text = merge_text(merged_text, chunk_text, overlap_words=5)
+
+                    print(f"[CHUNKING] Chunk {i+1}/{len(chunks)}: {chunk_text[:80]}...")
+
+                try:
+                    os.unlink(tmp_file.name)
+                except OSError:
+                    pass
+
+            except Exception as e:
+                print(f"[CHUNKING] Error processing chunk {i+1}: {e}")
+                # Continue with other chunks even if one fails
+
+        print(f"[CHUNKING] Final merged text: {merged_text[:100]}...")
+        return merged_text
+
     def transcribe_ndarray(self, audio_float32: np.ndarray, sample_rate: int = 16000) -> str:
         """
-        Transcribe audio from numpy float32 array.
+        Transcribe audio from numpy float32 array with automatic chunking for long recordings.
+
+        For audio > 30 seconds, automatically splits into overlapping chunks to avoid
+        exceeding NeMo's 40-second limit. Supports 10-15 minute recordings like Wispr Flow.
+
+        This method tries multiple approaches in order:
+        - Option A: Direct waveform/tensor API (if model supports it)
+        - Option B: In-memory BytesIO buffer (if model accepts file-like objects)
+        - Option C: Fallback to tempfile (always works, but has disk I/O)
 
         Args:
             audio_float32: np.ndarray of shape (N,), dtype float32, range [-1,1], sr=16000
@@ -313,16 +542,70 @@ class TranscriptionService:
         if self.model is None:
             raise RuntimeError("ASR model not loaded")
 
-        t0 = time.perf_counter()
+        # Check if chunking is needed
+        audio_duration = len(audio_float32) / sample_rate
+        if audio_duration > MAX_CHUNK_DURATION:
+            print(f"[CHUNKING] Audio is {audio_duration:.1f}s, chunking required (max {MAX_CHUNK_DURATION}s)")
+            return self._transcribe_chunked(audio_float32, sample_rate)
 
-        # Use tempfile approach (works reliably with NeMo)
+        t0 = time.perf_counter()
+        method_used = "unknown"
+
+        # Helper for autocast context (only CUDA supports amp.autocast)
+        def get_autocast_context():
+            if self.device.type == "cuda":
+                return torch.cuda.amp.autocast(enabled=True)
+            else:
+                # MPS and CPU don't use autocast the same way
+                return torch.inference_mode()
+
+        # Option A: Try direct waveform/tensor API if available
+        # NeMo Parakeet models typically don't have this, but check anyway
+        try:
+            if hasattr(self.model, 'transcribe_waveform'):
+                wav_tensor = torch.from_numpy(audio_float32).unsqueeze(0).to(self.device)
+                with torch.inference_mode():
+                    text = self.model.transcribe_waveform(wav_tensor)
+                took_ms = (time.perf_counter() - t0) * 1000.0
+                logger.info(f"transcribe_ndarray: {took_ms:.1f}ms via Option A (waveform)")
+                return self._extract_and_clean_text(text)
+            elif hasattr(self.model, 'transcribe_audio'):
+                wav_tensor = torch.from_numpy(audio_float32).unsqueeze(0).to(self.device)
+                with torch.inference_mode():
+                    text = self.model.transcribe_audio(wav_tensor)
+                took_ms = (time.perf_counter() - t0) * 1000.0
+                logger.info(f"transcribe_ndarray: {took_ms:.1f}ms via Option A (audio)")
+                return self._extract_and_clean_text(text)
+        except Exception as e:
+            logger.debug(f"Option A failed: {e}")
+
+        # Option B: Try in-memory BytesIO buffer
+        # Most NeMo models don't accept file-like objects, but we try anyway
+        try:
+            bio = io.BytesIO()
+            sf.write(bio, audio_float32, samplerate=sample_rate, format='WAV', subtype='PCM_16')
+            bio.seek(0)
+
+            # Check if transcribe accepts file-like by trying it
+            # This will likely fail for NeMo, but we try
+            with torch.inference_mode():
+                output = self.model.transcribe(bio, batch_size=1, verbose=False)
+
+            took_ms = (time.perf_counter() - t0) * 1000.0
+            logger.info(f"transcribe_ndarray: {took_ms:.1f}ms via Option B (BytesIO)")
+            return self._extract_and_clean_text(output)
+        except Exception as e:
+            logger.debug(f"Option B failed: {e}")
+
+        # Option C: Fallback to tempfile (always works with NeMo)
+        # Note: Caller should run this in asyncio.to_thread to keep disk I/O off event loop
         tmp_file = None
         try:
             t_write = time.perf_counter()
             tmp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             sf.write(tmp_file.name, audio_float32, samplerate=sample_rate, format='WAV', subtype='PCM_16')
             tmp_file.flush()
-            tmp_file.close()
+            tmp_file.close()  # Close before reading on Windows
             write_ms = (time.perf_counter() - t_write) * 1000.0
 
             t_infer = time.perf_counter()
@@ -331,7 +614,7 @@ class TranscriptionService:
             infer_ms = (time.perf_counter() - t_infer) * 1000.0
 
             took_ms = (time.perf_counter() - t0) * 1000.0
-            logger.info(f"transcribe_ndarray: {took_ms:.1f}ms (write={write_ms:.1f}ms, infer={infer_ms:.1f}ms)")
+            logger.info(f"transcribe_ndarray: {took_ms:.1f}ms via Option C (tempfile: write={write_ms:.1f}ms, infer={infer_ms:.1f}ms)")
             print(f"[TRANSCRIBE] {took_ms:.1f}ms (write={write_ms:.1f}ms, infer={infer_ms:.1f}ms)")
 
             return self._extract_and_clean_text(output)
@@ -363,26 +646,27 @@ class TranscriptionService:
         elif text.startswith('[') and text.endswith(']'):
             text = text[1:-1].strip('"\'')
 
+        # Clear CUDA cache and synchronize to prevent state corruption (supports long recordings)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()  # Wait for all CUDA ops to complete
+            torch.cuda.empty_cache()   # Free unused memory
+            # Reset CUDA graph state to prevent "replay without capture" errors
+            torch.cuda.reset_peak_memory_stats()
+
         return text.strip()
 
     def unload_model(self):
-        """Cleanup memory"""
+        """Cleanup GPU memory"""
         print("[SHUTDOWN] Cleaning up resources...")
         if self.model is not None:
             del self.model
             self.model = None
 
         gc.collect()
-
-        # MPS doesn't have explicit cache clearing like CUDA
-        if torch.backends.mps.is_available():
-            try:
-                # Force garbage collection for MPS
-                torch.mps.empty_cache()
-            except:
-                pass
-
-        print("[SHUTDOWN] Memory released")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        print("[SHUTDOWN] GPU memory released")
 
     def is_model_loaded(self) -> bool:
         """Check if model is loaded"""
@@ -404,11 +688,14 @@ class TranscriptionService:
 
             wav_path = webm_path.replace('.webm', '.wav')
 
-            # On macOS, FFmpeg should be installed via Homebrew
+            base_path = get_base_path()
+            project_root = os.path.dirname(base_path)
             ffmpeg_paths = [
-                'ffmpeg',  # Should be in PATH if installed via Homebrew
-                '/usr/local/bin/ffmpeg',  # Intel Mac Homebrew
-                '/opt/homebrew/bin/ffmpeg',  # Apple Silicon Homebrew
+                'ffmpeg',
+                os.path.join(base_path, 'ffmpeg', 'ffmpeg.exe'),
+                os.path.join(base_path, 'ffmpeg.exe'),
+                os.path.join(project_root, 'ffmpeg-master-latest-win64-gpl', 'bin', 'ffmpeg.exe'),
+                os.path.join(base_path, '..', 'ffmpeg-master-latest-win64-gpl', 'bin', 'ffmpeg.exe'),
             ]
 
             ffmpeg_cmd = None
@@ -495,11 +782,12 @@ class TranscriptionService:
                 transcribe_start = time.time()
 
                 with torch.inference_mode():
-                    output = self.model.transcribe(
-                        [tmp_path],
-                        batch_size=1,
-                        verbose=False
-                    )
+                    with torch.cuda.amp.autocast(enabled=(DEVICE == "cuda")):
+                        output = self.model.transcribe(
+                            [tmp_path],
+                            batch_size=1,
+                            verbose=False
+                        )
 
                     transcribe_time = time.time() - transcribe_start
 

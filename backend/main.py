@@ -1,20 +1,31 @@
 """
-Voice-Flow API - Main Application
+Voice-Flow API - Main Application (Cross-Platform)
 Refactored modular backend using FastAPI routers and services
+Supports Windows (CUDA), macOS (MPS/CPU), and Linux (CUDA/CPU)
 """
 import os
 import sys
+import platform
 
-# Disable CUDA graphs to support long recordings (10-15min like Wispr Flow)
-# This prevents "CUDA graph replay without capture" errors
-os.environ['CUDA_LAUNCH_BLOCKING'] = '0'  # Allow async kernel launches
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'  # Better memory management
+# Detect platform
+IS_WINDOWS = platform.system() == "Windows"
+IS_MAC = platform.system() == "Darwin"
+IS_LINUX = platform.system() == "Linux"
 
-# Add ffmpeg to PATH before any imports that use pydub
-base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ffmpeg_dir = os.path.join(base_path, 'ffmpeg-master-latest-win64-gpl', 'bin')
-if os.path.exists(ffmpeg_dir):
-    os.environ['PATH'] = ffmpeg_dir + os.pathsep + os.environ.get('PATH', '')
+# CUDA configuration (Windows/Linux only)
+if IS_WINDOWS or IS_LINUX:
+    # Disable CUDA graphs to support long recordings (10-15min like Wispr Flow)
+    # This prevents "CUDA graph replay without capture" errors
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'  # Force synchronous execution (fixes CUDA graph errors)
+    os.environ['NEMO_DISABLE_CUDAGRAPHS'] = '1'  # Explicitly disable CUDA graphs in NeMo
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'  # Better memory management
+
+# Add ffmpeg to PATH (Windows only - Mac uses Homebrew)
+if IS_WINDOWS:
+    base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ffmpeg_dir = os.path.join(base_path, 'windows', 'ffmpeg-master-latest-win64-gpl', 'bin')
+    if os.path.exists(ffmpeg_dir):
+        os.environ['PATH'] = ffmpeg_dir + os.pathsep + os.environ.get('PATH', '')
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
