@@ -8,7 +8,7 @@ import os
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./voiceflow.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./stoptyping.db")
 
 # Create SQLAlchemy engine
 engine = create_engine(
@@ -187,7 +187,7 @@ DEFAULT_MODES = [
 - Handle self-corrections
 - Preserve the speaker's voice and intent
 Output ONLY the cleaned text.""",
-        "use_ai_polish": True,
+        "use_ai_polish": False,
         "tone": "casual",
         "is_default": True,
         "sort_order": 0
