@@ -85,3 +85,8 @@ backend/parakeet_setup/
 
 # Release builds
 app/release/
+
+# Release builds (too large for git)
+release/
+*.dmg
+*.pkg

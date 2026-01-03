@@ -48,6 +48,35 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   }, [currentStep])
 
   const requestMicPermission = async () => {
+    // Check if running in Electron (main process handles mic via FFmpeg, not browser API)
+    const isElectron = !!(window as any).voiceFlow || !!(window as any).electron
+
+    if (isElectron) {
+      // In Electron, skip browser getUserMedia - main process handles audio via FFmpeg
+      // System permission is already requested by main process via systemPreferences.askForMediaAccess
+      console.log('Running in Electron - skipping browser getUserMedia, using FFmpeg for audio')
+      setMicPermissionGranted(true)
+      setMicPermissionDenied(false)
+
+      // Try to enumerate devices (may fail on file:// but that's OK)
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const audioInputs = devices
+          .filter(device => device.kind === 'audioinput')
+          .map(device => ({
+            deviceId: device.deviceId,
+            label: device.label || `Microphone ${device.deviceId.slice(0, 8)}`
+          }))
+        if (audioInputs.length > 0) {
+          setMicrophones(audioInputs)
+        }
+      } catch (e) {
+        console.log('Could not enumerate devices (expected on file:// protocol)')
+      }
+      return
+    }
+
+    // Browser mode - use standard getUserMedia
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       // Stop the stream immediately - we just needed permission

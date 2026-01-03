@@ -195,13 +195,12 @@ export function ToastWindow() {
               style={{
                 background: 'rgba(40, 40, 35, 0.95)',
                 boxShadow: '0 4px 20px rgba(0, 0, 0, 0.25)',
-                borderRadius: '12px',
+                borderRadius: '16px',
                 padding: '12px 16px',
-                maxHeight: '120px',
-                overflowY: 'auto',
                 width: '100%',
-                maxWidth: '420px',
-                scrollBehavior: 'smooth'
+                maxWidth: '500px',
+                maxHeight: '90px',
+                overflowY: 'auto'
               }}
             >
               <div style={{
@@ -295,6 +294,20 @@ export function ToastWindow() {
         }
         .animate-spin {
           animation: spin 1s linear infinite;
+        }
+        /* Custom scrollbar for toast */
+        div::-webkit-scrollbar {
+          width: 6px;
+        }
+        div::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        div::-webkit-scrollbar-thumb {
+          background: rgba(255, 255, 255, 0.2);
+          border-radius: 3px;
+        }
+        div::-webkit-scrollbar-thumb:hover {
+          background: rgba(255, 255, 255, 0.3);
         }
       `}</style>
     </div>

@@ -23,6 +23,9 @@ import {
   nativeImage,
   net,
   screen,
+  systemPreferences,
+  dialog,
+  session,
 } from 'electron'
 import path from 'path'
 import { existsSync } from 'fs'
@@ -34,9 +37,13 @@ import WebSocket from 'ws'
 
 // ============== CONFIG ==============
 const DEV_URL = 'http://localhost:5173'
-const API_BASE_URL = 'http://127.0.0.1:8000'
-const WS_URL = 'ws://127.0.0.1:8000'
+const BACKEND_HOST = process.env.VITE_BACKEND_HOST || '10.18.4.8'  // Network IP for client deployment
+const BACKEND_PORT = process.env.VITE_BACKEND_PORT || '8001'
+const API_BASE_URL = `http://${BACKEND_HOST}:${BACKEND_PORT}`
+const WS_URL = `ws://${BACKEND_HOST}:${BACKEND_PORT}`
 const SAMPLE_RATE = 16000
+
+console.log(`[Voice-Flow] Connecting to backend: ${API_BASE_URL}`)
 
 // Default hotkey - macOS uses Command key
 let currentHotkey = 'Command+Shift+S'
@@ -61,6 +68,13 @@ let wsToken: string | null = null
 let audioBuffer: Buffer[] = []
 let wsReady = false
 let finalReceived = false
+
+// Audio chunking: Accumulate small FFmpeg chunks into larger ones (like Windows)
+// Math: 16kHz sample rate * 2 bytes (16-bit) * 0.5 seconds = 16000 bytes per chunk
+// This gives ~2 chunks/second like Windows (40 chunks for 20 seconds)
+const TARGET_CHUNK_BYTES = 16000  // 500ms of audio
+let audioAccumulator = Buffer.alloc(0)  // Single buffer to accumulate audio
+
 
 // Context capture globals
 let capturedContext: CapturedContext | null = null
@@ -196,11 +210,38 @@ function preCacheWsToken(): void {
 
 // ============== AUDIO RECORDING (macOS - AVFoundation) ==============
 
-function sendAudioChunk(chunk: Buffer) {
-  if (wsReady && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-    wsConnection.send(chunk)
-  } else {
-    audioBuffer.push(chunk)
+/**
+ * Send audio data - accumulates into TARGET_CHUNK_BYTES chunks before sending
+ * This reduces chunk count from 2000+ to ~40 for 20 seconds (like Windows)
+ */
+function sendAudioData(data: Buffer) {
+  // Accumulate data
+  audioAccumulator = Buffer.concat([audioAccumulator, data])
+
+  // Send complete chunks
+  while (audioAccumulator.length >= TARGET_CHUNK_BYTES) {
+    const chunk = audioAccumulator.subarray(0, TARGET_CHUNK_BYTES)
+    audioAccumulator = audioAccumulator.subarray(TARGET_CHUNK_BYTES)
+
+    if (wsReady && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+      wsConnection.send(chunk)
+    } else {
+      audioBuffer.push(Buffer.from(chunk))
+    }
+  }
+}
+
+/**
+ * Flush any remaining audio in accumulator
+ */
+function flushRemainingAudio() {
+  if (audioAccumulator.length > 0) {
+    if (wsReady && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+      wsConnection.send(audioAccumulator)
+    } else {
+      audioBuffer.push(Buffer.from(audioAccumulator))
+    }
+    audioAccumulator = Buffer.alloc(0)
   }
 }
 
@@ -215,12 +256,12 @@ function flushAudioBuffer() {
 }
 
 /**
- * Start audio capture using FFmpeg with AVFoundation (macOS)
+ * Start audio capture - starts FFmpeg fresh each time (no pre-warming)
  */
 async function startAudioCaptureDefault(): Promise<boolean> {
-  const ffmpegPath = getFFmpegPath()
-
+  // Reset everything for new recording
   audioBuffer = []
+  audioAccumulator = Buffer.alloc(0)
   wsReady = false
 
   if (!cachedAudioDevice) {
@@ -233,23 +274,22 @@ async function startAudioCaptureDefault(): Promise<boolean> {
   }
 
   log(`Starting audio with device: ${cachedAudioDevice}`)
+  const ffmpegPath = getFFmpegPath()
 
-  // macOS uses avfoundation for audio capture
-  // :0 = default audio input, or :N for specific device
   ffmpegProcess = spawn(ffmpegPath, [
-    '-f', 'avfoundation',           // macOS audio framework
-    '-i', `:${cachedAudioDevice}`,  // Audio device (colon prefix means audio-only)
-    '-ar', String(SAMPLE_RATE),      // Sample rate
-    '-ac', '1',                       // Mono
-    '-f', 's16le',                    // Raw PCM format
-    '-acodec', 'pcm_s16le',          // PCM codec
-    'pipe:1'                          // Output to stdout
+    '-f', 'avfoundation',
+    '-i', `:${cachedAudioDevice}`,
+    '-ar', String(SAMPLE_RATE),
+    '-ac', '1',
+    '-f', 's16le',
+    '-acodec', 'pcm_s16le',
+    'pipe:1'
   ], {
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
   ffmpegProcess.stdout?.on('data', (chunk: Buffer) => {
-    sendAudioChunk(chunk)
+    sendAudioData(chunk)
   })
 
   ffmpegProcess.stderr?.on('data', (data: Buffer) => {
@@ -273,13 +313,25 @@ async function startAudioCaptureDefault(): Promise<boolean> {
 }
 
 function stopAudioCapture() {
+  log('Stopping FFmpeg...')
+  // Flush remaining audio before stopping
+  flushRemainingAudio()
+
   if (ffmpegProcess) {
-    log('Stopping FFmpeg...')
     ffmpegProcess.kill('SIGTERM')
     ffmpegProcess = null
   }
   audioBuffer = []
+  audioAccumulator = Buffer.alloc(0)
   wsReady = false
+}
+
+function killFFmpeg() {
+  log('Killing FFmpeg process...')
+  if (ffmpegProcess) {
+    ffmpegProcess.kill('SIGTERM')
+    ffmpegProcess = null
+  }
 }
 
 // ============== WEBSOCKET CONNECTION ==============
@@ -305,11 +357,12 @@ async function connectWebSocket(): Promise<boolean> {
           clipboard_text: capturedContext?.clipboardText || null,
           mode_id: currentModeId
         }))
+        // Wait 150ms on first connection to ensure backend is ready
         setTimeout(() => {
           wsReady = true
           log('WebSocket ready, flushing audio buffer...')
           flushAudioBuffer()
-        }, 50)
+        }, 150)
         resolve(true)
       })
 
@@ -391,7 +444,14 @@ async function handleFinalTranscription(text: string) {
 
   try {
     if (text && text.trim().length > 0) {
-      updateToast('processing', 'Injecting...')
+      // Hide ALL Voice-Flow windows BEFORE injection so target app gets focus
+      hideToast()
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.hide()
+      }
+
+      // Small delay to let macOS return focus to previous app
+      await new Promise(resolve => setTimeout(resolve, 100))
 
       const result = await injectText(text)
 
@@ -538,15 +598,16 @@ function createToastWindow() {
   if (toastWindow) return
 
   toastWindow = new BrowserWindow({
-    width: 500,
-    height: 120,
+    width: 550,
+    height: 170,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
-    focusable: false,
+    focusable: false,           // Don't take focus
     show: false,
+    hasShadow: false,           // No shadow to avoid visual focus cue
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -555,11 +616,22 @@ function createToastWindow() {
     },
   })
 
-  if (isDev || !app.isPackaged) {
-    toastWindow.loadURL(`${DEV_URL}/#/toast`)
-  } else {
+  // macOS: Set window level to floating (above normal windows) and show on all workspaces
+  toastWindow.setAlwaysOnTop(true, 'floating')
+  toastWindow.setVisibleOnAllWorkspaces(true)
+
+  if (app.isPackaged) {
     const indexPath = path.join(process.resourcesPath, 'app', 'index.html')
     toastWindow.loadFile(indexPath, { hash: '/toast' })
+  } else if (isDev) {
+    toastWindow.loadURL(`${DEV_URL}/#/toast`)
+  } else {
+    const localDistPath = path.join(__dirname, '..', '..', 'frontend', 'dist', 'index.html')
+    if (existsSync(localDistPath)) {
+      toastWindow.loadFile(localDistPath, { hash: '/toast' })
+    } else {
+      toastWindow.loadURL(`${DEV_URL}/#/toast`)
+    }
   }
 
   toastWindow.on('closed', () => {
@@ -574,10 +646,10 @@ function positionToast() {
   const { width } = primaryDisplay.workAreaSize
 
   toastWindow.setBounds({
-    x: Math.round((width - 500) / 2),
+    x: Math.round((width - 550) / 2),
     y: 40,
-    width: 500,
-    height: 120,
+    width: 550,
+    height: 170,
   })
 }
 
@@ -593,7 +665,8 @@ function updateToast(type: 'recording' | 'processing' | 'done' | 'error', messag
       toastWindow?.webContents.send('vf:live-transcription', { partial: '', confirmed: '' })
     }
     toastWindow?.webContents.send('vf:show-toast', { type, message, mode: 'hold' })
-    toastWindow?.show()
+    // Use showInactive to avoid stealing focus from target app
+    toastWindow?.showInactive()
   } catch (e) {
     // Ignore
   }
@@ -642,13 +715,25 @@ function createWindow(showImmediately = false) {
     },
   })
 
-  if (isDev || !app.isPackaged) {
+  if (app.isPackaged) {
+    // Production: load from resources
+    const indexPath = path.join(process.resourcesPath, 'app', 'index.html')
+    mainWindow.loadFile(indexPath)
+  } else if (isDev) {
+    // Dev mode with hot reload
     log(`Loading dev URL: ${DEV_URL}`)
     mainWindow.loadURL(DEV_URL)
     mainWindow.webContents.openDevTools({ mode: 'detach' })
   } else {
-    const indexPath = path.join(process.resourcesPath, 'app', 'index.html')
-    mainWindow.loadFile(indexPath)
+    // Local testing: load from built frontend
+    const localDistPath = path.join(__dirname, '..', '..', 'frontend', 'dist', 'index.html')
+    log(`Loading local build: ${localDistPath}`)
+    if (existsSync(localDistPath)) {
+      mainWindow.loadFile(localDistPath)
+    } else {
+      log(`ERROR: Frontend not built. Run 'cd frontend && npm run build'`)
+      mainWindow.loadURL(DEV_URL) // Fallback to dev server
+    }
   }
 
   mainWindow.once('ready-to-show', () => {
@@ -1001,11 +1086,79 @@ app.whenReady().then(async () => {
   log(`Dev mode: ${isDev}`)
   log('Voice-Flow starting...')
 
+  // macOS permissions
+  if (process.platform === 'darwin') {
+    // 1. Check and request Accessibility permission (required for hotkeys and text injection)
+    const isTrusted = systemPreferences.isTrustedAccessibilityClient(false)
+    log(`Accessibility permission: ${isTrusted ? 'granted' : 'not granted'}`)
+
+    if (!isTrusted) {
+      log('Requesting Accessibility permission...')
+      // This will show the system prompt to grant accessibility permission
+      const promptResult = systemPreferences.isTrustedAccessibilityClient(true)
+
+      if (!promptResult) {
+        // Show a dialog explaining why the permission is needed
+        dialog.showMessageBox({
+          type: 'warning',
+          title: 'Accessibility Permission Required',
+          message: 'Voice-Flow needs Accessibility permission to detect hotkeys and inject text.',
+          detail: 'Please go to System Preferences > Security & Privacy > Privacy > Accessibility and enable Voice-Flow.\n\nThe app will continue to run, but hotkeys may not work until permission is granted.',
+          buttons: ['Open System Preferences', 'Continue Anyway'],
+          defaultId: 0,
+        }).then((result) => {
+          if (result.response === 0) {
+            // Open System Preferences to Accessibility
+            require('child_process').exec('open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"')
+          }
+        })
+      }
+    }
+
+    // 2. Request Microphone permission (required for audio recording)
+    const micStatus = systemPreferences.getMediaAccessStatus('microphone')
+    log(`Microphone permission: ${micStatus}`)
+
+    if (micStatus !== 'granted') {
+      log('Requesting Microphone permission...')
+      systemPreferences.askForMediaAccess('microphone').then((granted) => {
+        log(`Microphone permission ${granted ? 'granted' : 'denied'}`)
+        if (!granted) {
+          dialog.showMessageBox({
+            type: 'warning',
+            title: 'Microphone Permission Required',
+            message: 'Voice-Flow needs Microphone access to record your voice.',
+            detail: 'Please go to System Preferences > Security & Privacy > Privacy > Microphone and enable Voice-Flow.',
+            buttons: ['OK'],
+          })
+        }
+      })
+    }
+  }
+
+  // Set up permission handlers for renderer process (getUserMedia, etc.)
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    log(`Permission request: ${permission}`)
+    // Allow media permissions (includes microphone)
+    const allowedPermissions = ['media', 'notifications']
+    if (allowedPermissions.includes(permission) || permission.includes('media')) {
+      callback(true)
+    } else {
+      callback(true) // Allow all permissions for now since this is a desktop app
+    }
+  })
+
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
+    log(`Permission check: ${permission}`)
+    // Allow all permissions for desktop app
+    return true
+  })
+
   initAudioDevice()
   setTimeout(() => preCacheWsToken(), 1000)
 
   setupIpcHandlers()
-  createWindow(true)
+  createWindow(false)  // Don't show main window at startup - tray app behavior
   createToastWindow()
   createTray()
 
@@ -1033,7 +1186,7 @@ app.on('will-quit', () => {
   log('Quitting...')
   uIOhook.stop()
   globalShortcut.unregisterAll()
-  stopAudioCapture()
+  killFFmpeg()  // Kill FFmpeg on app quit
   if (wsConnection) wsConnection.close()
 })
 
