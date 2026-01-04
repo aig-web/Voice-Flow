@@ -63,7 +63,9 @@ def get_device():
         return "cpu"
 
 DEVICE = get_device()
-MODEL_PRECISION = "fp16" if "cuda" in DEVICE else "fp32"
+# Allow overriding precision via environment variable (default: fp16 for CUDA to save VRAM)
+# Set MODEL_PRECISION=fp32 for better quality on high-VRAM GPUs (Colab T4 = 15GB)
+MODEL_PRECISION = os.getenv("MODEL_PRECISION", "fp16" if "cuda" in DEVICE else "fp32")
 
 
 def get_base_path():
@@ -370,7 +372,7 @@ class TranscriptionService:
         """Load Parakeet ASR model with warmup (optimized for 6GB VRAM)"""
         import nemo.collections.asr as nemo_asr
 
-        print(f"[PARAKEET] Loading model on {DEVICE} with FP16 precision...")
+        print(f"[PARAKEET] Loading model on {DEVICE} with {MODEL_PRECISION.upper()} precision...")
         warnings.filterwarnings('ignore')
 
         # Aggressive memory cleanup before loading
@@ -411,7 +413,7 @@ class TranscriptionService:
             print(f"[PARAKEET] VRAM: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
 
         self.model = model
-        print(f"[PARAKEET] Model loaded successfully on {DEVICE} (FP16)")
+        print(f"[PARAKEET] Model loaded successfully on {DEVICE} ({MODEL_PRECISION.upper()})")
 
         # Warmup: run a tiny inference to avoid first-call CUDA overhead
         self._warmup_model()
