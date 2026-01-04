@@ -389,6 +389,17 @@ class TranscriptionService:
             )
             if DEVICE == "cuda":
                 model = model.to(dtype=dtype)
+
+                # Verify actual dtype of model parameters
+                sample_param = next(model.parameters())
+                actual_dtype = sample_param.dtype
+                print(f"[PARAKEET] Requested: {dtype}, Actual model dtype: {actual_dtype}")
+                if actual_dtype != dtype:
+                    print(f"[PARAKEET WARNING] Model dtype mismatch! Converting manually...")
+                    model = model.float() if dtype == torch.float32 else model.half()
+                    sample_param = next(model.parameters())
+                    print(f"[PARAKEET] After manual conversion: {sample_param.dtype}")
+
                 # Disable CUDA graphs to prevent crashes on long recordings (like Wispr Flow)
                 # Trade: Slightly slower inference, but stable for 10-15min recordings
                 torch.backends.cudnn.benchmark = False
