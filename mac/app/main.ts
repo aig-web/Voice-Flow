@@ -37,13 +37,12 @@ import WebSocket from 'ws'
 
 // ============== CONFIG ==============
 const DEV_URL = 'http://localhost:5173'
-const BACKEND_HOST = process.env.VITE_BACKEND_HOST || '10.18.4.8'  // Network IP for client deployment
-const BACKEND_PORT = process.env.VITE_BACKEND_PORT || '8001'
-const API_BASE_URL = `http://${BACKEND_HOST}:${BACKEND_PORT}`
-const WS_URL = `ws://${BACKEND_HOST}:${BACKEND_PORT}`
+const API_BASE_URL = process.env.VITE_API_URL || 'https://ilona-decipherable-stupidly.ngrok-free.dev'
+const WS_URL = API_BASE_URL.replace('https://', 'wss://').replace('http://', 'ws://')
 const SAMPLE_RATE = 16000
 
 console.log(`[Voice-Flow] Connecting to backend: ${API_BASE_URL}`)
+console.log(`[Voice-Flow] WebSocket URL: ${WS_URL}`)
 
 // Default hotkey - macOS uses Command key
 let currentHotkey = 'Command+Shift+S'
