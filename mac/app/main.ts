@@ -74,6 +74,12 @@ let finalReceived = false
 const TARGET_CHUNK_BYTES = 16000  // 500ms of audio
 let audioAccumulator = Buffer.alloc(0)  // Single buffer to accumulate audio
 
+// FFmpeg pre-warming: Keep FFmpeg running to eliminate startup delay
+let ffmpegPrewarmed = false  // Is FFmpeg already running in standby?
+let isCapturing = false  // Are we actively capturing audio (vs standby)?
+let preWarmBuffer: Buffer[] = []  // Rolling buffer of recent audio for instant start
+const PRE_WARM_BUFFER_MS = 1500  // Keep 1.5 seconds of audio in pre-warm buffer
+const PRE_WARM_BUFFER_SIZE = Math.floor((16000 * 2 * PRE_WARM_BUFFER_MS) / 1000)  // bytes at 16kHz 16-bit mono
 
 // Context capture globals
 let capturedContext: CapturedContext | null = null
@@ -158,15 +164,75 @@ function initAudioDevice(): void {
   cachedAudioDevice = detectAudioDevice()
   if (cachedAudioDevice) {
     log(`Audio device cached: ${cachedAudioDevice}`)
+    // Pre-warm FFmpeg so recording starts instantly
+    setTimeout(() => {
+      preWarmFFmpeg()
+    }, 500)  // Small delay to let app finish initializing
   } else {
     logError('No audio device detected at startup!')
   }
+}
+
+/**
+ * Pre-warm FFmpeg - start it in standby mode so recording starts instantly
+ * Call this at app startup after detecting audio device
+ */
+function preWarmFFmpeg(): boolean {
+  if (ffmpegPrewarmed && ffmpegProcess) {
+    log('FFmpeg already pre-warmed')
+    return true
+  }
+
+  const ffmpegPath = getFFmpegPath()
+
+  if (!cachedAudioDevice) {
+    logError('Cannot pre-warm FFmpeg - no cached audio device')
+    return false
+  }
+
+  log(`Pre-warming FFmpeg with device: ${cachedAudioDevice}`)
+
+  ffmpegProcess = spawn(ffmpegPath, [
+    '-f', 'avfoundation',
+    '-i', `:${cachedAudioDevice}`,
+    '-ar', String(SAMPLE_RATE),
+    '-ac', '1',
+    '-f', 's16le',
+    '-acodec', 'pcm_s16le',
+    'pipe:1'
+  ], {
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+
+  ffmpegProcess.stdout?.on('data', (chunk: Buffer) => {
+    sendAudioData(chunk)
+  })
+
+  ffmpegProcess.stderr?.on('data', () => {
+    // Suppress non-error output
+  })
+
+  ffmpegProcess.on('close', () => {
+    log('FFmpeg pre-warm process closed')
+    ffmpegPrewarmed = false
+    ffmpegProcess = null
+  })
+
+  ffmpegPrewarmed = true
+  preWarmBuffer = []
+  log('FFmpeg pre-warmed and ready')
+  return true
 }
 
 // ============== WebSocket Token ==============
 async function fetchWsToken(): Promise<string> {
   return new Promise((resolve, reject) => {
     const request = net.request(`${API_BASE_URL}/api/ws-token`)
+
+    // Add headers to bypass ngrok warning page
+    request.setHeader('User-Agent', 'Voice-Flow/2.0')
+    request.setHeader('ngrok-skip-browser-warning', 'true')
+
     let data = ''
 
     request.on('response', (response) => {
@@ -176,6 +242,7 @@ async function fetchWsToken(): Promise<string> {
           const json = JSON.parse(data)
           resolve(json.token)
         } catch (e) {
+          logError(`Failed to parse token response: ${data.substring(0, 200)}`)
           reject(new Error('Invalid token response'))
         }
       })
@@ -210,7 +277,8 @@ function preCacheWsToken(): void {
 // ============== AUDIO RECORDING (macOS - AVFoundation) ==============
 
 /**
- * Send audio data - accumulates into TARGET_CHUNK_BYTES chunks before sending
+ * Send audio data - routes to either pre-warm buffer or WebSocket based on state
+ * Accumulates into TARGET_CHUNK_BYTES chunks before sending
  * This reduces chunk count from 2000+ to ~40 for 20 seconds (like Windows)
  */
 function sendAudioData(data: Buffer) {
@@ -222,10 +290,22 @@ function sendAudioData(data: Buffer) {
     const chunk = audioAccumulator.subarray(0, TARGET_CHUNK_BYTES)
     audioAccumulator = audioAccumulator.subarray(TARGET_CHUNK_BYTES)
 
-    if (wsReady && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-      wsConnection.send(chunk)
-    } else {
-      audioBuffer.push(Buffer.from(chunk))
+    if (isCapturing) {
+      // Actively recording - send to WebSocket or buffer
+      if (wsReady && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+        wsConnection.send(chunk)
+      } else {
+        audioBuffer.push(Buffer.from(chunk))
+      }
+    } else if (ffmpegPrewarmed) {
+      // Pre-warm mode - maintain rolling buffer of recent audio
+      preWarmBuffer.push(Buffer.from(chunk))
+      // Keep buffer size under limit (rolling window)
+      let totalSize = preWarmBuffer.reduce((sum, b) => sum + b.length, 0)
+      while (totalSize > PRE_WARM_BUFFER_SIZE && preWarmBuffer.length > 0) {
+        const removed = preWarmBuffer.shift()
+        if (removed) totalSize -= removed.length
+      }
     }
   }
 }
@@ -255,14 +335,16 @@ function flushAudioBuffer() {
 }
 
 /**
- * Start audio capture - starts FFmpeg fresh each time (no pre-warming)
+ * Start audio capture using CACHED device (instant start, no device detection delay)
+ * If FFmpeg is pre-warmed, just switch to capture mode and use buffered audio
  */
 async function startAudioCaptureDefault(): Promise<boolean> {
-  // Reset everything for new recording
+  // Reset audio buffer for new recording
   audioBuffer = []
   audioAccumulator = Buffer.alloc(0)
   wsReady = false
 
+  // Use cached device for instant start (no execSync delay!)
   if (!cachedAudioDevice) {
     logError('No cached audio device - detecting now...')
     cachedAudioDevice = detectAudioDevice()
@@ -272,7 +354,19 @@ async function startAudioCaptureDefault(): Promise<boolean> {
     }
   }
 
-  log(`Starting audio with device: ${cachedAudioDevice}`)
+  // If FFmpeg is already pre-warmed, just switch to capture mode
+  if (ffmpegPrewarmed && ffmpegProcess) {
+    log('Using pre-warmed FFmpeg - instant start!')
+    // Copy pre-warm buffer to audio buffer (captures speech from before hotkey press)
+    audioBuffer = [...preWarmBuffer]
+    preWarmBuffer = []
+    isCapturing = true
+    log(`Captured ${audioBuffer.length} pre-buffered chunks (${audioBuffer.reduce((s, b) => s + b.length, 0)} bytes)`)
+    return true
+  }
+
+  // Fallback: start FFmpeg fresh (has ~0.5-1s delay)
+  log(`Starting FFmpeg fresh with device: ${cachedAudioDevice}`)
   const ffmpegPath = getFFmpegPath()
 
   ffmpegProcess = spawn(ffmpegPath, [
@@ -291,38 +385,31 @@ async function startAudioCaptureDefault(): Promise<boolean> {
     sendAudioData(chunk)
   })
 
-  ffmpegProcess.stderr?.on('data', (data: Buffer) => {
-    const msg = data.toString()
-    if (msg.includes('error') || msg.includes('Error')) {
-      logError(`FFmpeg: ${msg}`)
-    }
+  ffmpegProcess.stderr?.on('data', () => {
+    // Suppress non-error output
   })
 
-  ffmpegProcess.on('error', (err) => {
-    logError('FFmpeg process error:', err)
-    ffmpegProcess = null
-  })
-
-  ffmpegProcess.on('exit', (code) => {
-    log(`FFmpeg exited with code ${code}`)
-    ffmpegProcess = null
-  })
-
+  isCapturing = true
   return true
 }
 
 function stopAudioCapture() {
-  log('Stopping FFmpeg...')
+  log('Stopping audio capture (keeping FFmpeg pre-warmed)...')
   // Flush remaining audio before stopping
   flushRemainingAudio()
 
-  if (ffmpegProcess) {
-    ffmpegProcess.kill('SIGTERM')
-    ffmpegProcess = null
-  }
+  // Don't kill FFmpeg - switch back to pre-warm mode for instant next recording
+  isCapturing = false
   audioBuffer = []
   audioAccumulator = Buffer.alloc(0)
   wsReady = false
+  preWarmBuffer = []  // Clear pre-warm buffer, will refill automatically
+
+  // If FFmpeg died for some reason, restart it
+  if (!ffmpegProcess) {
+    log('FFmpeg not running, restarting pre-warm...')
+    preWarmFFmpeg()
+  }
 }
 
 function killFFmpeg() {
@@ -331,6 +418,11 @@ function killFFmpeg() {
     ffmpegProcess.kill('SIGTERM')
     ffmpegProcess = null
   }
+  ffmpegPrewarmed = false
+  isCapturing = false
+  audioBuffer = []
+  audioAccumulator = Buffer.alloc(0)
+  preWarmBuffer = []
 }
 
 // ============== WEBSOCKET CONNECTION ==============

@@ -74,12 +74,21 @@ let preWarmBuffer: Buffer[] = []  // Rolling buffer of recent audio for instant 
 const PRE_WARM_BUFFER_MS = 1500  // Keep 1.5 seconds of audio in pre-warm buffer
 const PRE_WARM_BUFFER_SIZE = Math.floor((16000 * 2 * PRE_WARM_BUFFER_MS) / 1000)  // bytes at 16kHz 16-bit mono
 
+// Audio chunking: Accumulate small FFmpeg chunks into larger ones (like macOS)
+// Math: 16kHz sample rate * 2 bytes (16-bit) * 0.5 seconds = 16000 bytes per chunk
+// This gives ~2 chunks/second (40 chunks for 20 seconds)
+const TARGET_CHUNK_BYTES = 16000  // 500ms of audio
+let audioAccumulator = Buffer.alloc(0)  // Single buffer to accumulate audio
+
 // Context capture globals
 let capturedContext: CapturedContext | null = null
 let currentModeId: number | null = null  // Active mode ID
 
 // Cached audio device (detected at startup for instant recording)
 let cachedAudioDevice: string | null = null
+
+// Pre-cached WebSocket token
+let cachedWsToken: string | null = null
 
 // ============== LOGGING ==============
 function log(message: string, ...args: unknown[]) {
@@ -260,9 +269,14 @@ function initAudioDevice(): void {
 }
 
 // ============== WebSocket Token ==============
-async function getWsToken(): Promise<string> {
+async function fetchWsToken(): Promise<string> {
   return new Promise((resolve, reject) => {
     const request = net.request(`${API_BASE_URL}/api/ws-token`)
+
+    // Add headers to bypass ngrok warning page
+    request.setHeader('User-Agent', 'Voice-Flow/2.0')
+    request.setHeader('ngrok-skip-browser-warning', 'true')
+
     let data = ''
 
     request.on('response', (response) => {
@@ -272,6 +286,7 @@ async function getWsToken(): Promise<string> {
           const json = JSON.parse(data)
           resolve(json.token)
         } catch (e) {
+          logError(`Failed to parse token response: ${data.substring(0, 200)}`)
           reject(new Error('Invalid token response'))
         }
       })
@@ -282,28 +297,74 @@ async function getWsToken(): Promise<string> {
   })
 }
 
+async function getWsToken(): Promise<string> {
+  if (cachedWsToken) {
+    const token = cachedWsToken
+    fetchWsToken().then(t => { cachedWsToken = t }).catch(() => {})
+    return token
+  }
+  cachedWsToken = await fetchWsToken()
+  return cachedWsToken
+}
+
+function preCacheWsToken(): void {
+  fetchWsToken()
+    .then(token => {
+      cachedWsToken = token
+      log('WebSocket token pre-cached')
+    })
+    .catch(err => {
+      log('Failed to pre-cache WS token:', err.message)
+    })
+}
+
 // ============== AUDIO RECORDING (Main Process) ==============
 
 /**
- * Send audio chunk - either buffer it or send directly based on WebSocket state
+ * Send audio chunk - accumulates into TARGET_CHUNK_BYTES chunks before sending
+ * Routes to either pre-warm buffer or WebSocket based on state
+ * This reduces chunk count from 2000+ to ~40 for 20 seconds (like macOS)
  */
-function sendAudioChunk(chunk: Buffer) {
-  if (isCapturing) {
-    // Actively recording - send to WebSocket or buffer
-    if (wsReady && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-      wsConnection.send(chunk)
-    } else {
-      audioBuffer.push(chunk)
+function sendAudioChunk(data: Buffer) {
+  // Accumulate data
+  audioAccumulator = Buffer.concat([audioAccumulator, data])
+
+  // Send complete chunks
+  while (audioAccumulator.length >= TARGET_CHUNK_BYTES) {
+    const chunk = audioAccumulator.subarray(0, TARGET_CHUNK_BYTES)
+    audioAccumulator = audioAccumulator.subarray(TARGET_CHUNK_BYTES)
+
+    if (isCapturing) {
+      // Actively recording - send to WebSocket or buffer
+      if (wsReady && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+        wsConnection.send(chunk)
+      } else {
+        audioBuffer.push(Buffer.from(chunk))
+      }
+    } else if (ffmpegPrewarmed) {
+      // Pre-warm mode - maintain rolling buffer of recent audio
+      preWarmBuffer.push(Buffer.from(chunk))
+      // Keep buffer size under limit (rolling window)
+      let totalSize = preWarmBuffer.reduce((sum, b) => sum + b.length, 0)
+      while (totalSize > PRE_WARM_BUFFER_SIZE && preWarmBuffer.length > 0) {
+        const removed = preWarmBuffer.shift()
+        if (removed) totalSize -= removed.length
+      }
     }
-  } else if (ffmpegPrewarmed) {
-    // Pre-warm mode - maintain rolling buffer of recent audio
-    preWarmBuffer.push(chunk)
-    // Keep buffer size under limit (rolling window)
-    let totalSize = preWarmBuffer.reduce((sum, b) => sum + b.length, 0)
-    while (totalSize > PRE_WARM_BUFFER_SIZE && preWarmBuffer.length > 0) {
-      const removed = preWarmBuffer.shift()
-      if (removed) totalSize -= removed.length
+  }
+}
+
+/**
+ * Flush any remaining audio in accumulator
+ */
+function flushRemainingAudio() {
+  if (audioAccumulator.length > 0) {
+    if (isCapturing && wsReady && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+      wsConnection.send(audioAccumulator)
+    } else if (isCapturing) {
+      audioBuffer.push(Buffer.from(audioAccumulator))
     }
+    audioAccumulator = Buffer.alloc(0)
   }
 }
 
@@ -513,6 +574,7 @@ function preWarmFFmpeg(): boolean {
 async function startAudioCaptureDefault(): Promise<boolean> {
   // Reset audio buffer for new recording
   audioBuffer = []
+  audioAccumulator = Buffer.alloc(0)
   wsReady = false
 
   // Use cached device for instant start (no execSync delay!)
@@ -567,9 +629,13 @@ async function startAudioCaptureDefault(): Promise<boolean> {
 
 function stopAudioCapture() {
   log('Stopping audio capture (keeping FFmpeg pre-warmed)...')
+  // Flush remaining audio before stopping
+  flushRemainingAudio()
+
   // Don't kill FFmpeg - switch back to pre-warm mode for instant next recording
   isCapturing = false
   audioBuffer = []
+  audioAccumulator = Buffer.alloc(0)
   wsReady = false
   preWarmBuffer = []  // Clear pre-warm buffer, will refill automatically
 
@@ -589,6 +655,7 @@ function killFFmpeg() {
   ffmpegPrewarmed = false
   isCapturing = false
   audioBuffer = []
+  audioAccumulator = Buffer.alloc(0)
   preWarmBuffer = []
 }
 
@@ -791,21 +858,25 @@ async function startRecording() {
     return
   }
 
+  const startTime = Date.now()
   log('Starting recording...')
   recordingState = 'recording'
   finalReceived = false  // Reset for new recording
   updateToast('recording', 'Listening...')
 
   try {
-    // Start audio capture IMMEDIATELY - don't wait for anything else
-    // This ensures we capture speech from the very start
-    const audioOk = await startAudioCaptureDefault()
+    // Start audio capture and WebSocket in parallel for faster startup
+    const [audioOk, wsOk] = await Promise.all([
+      startAudioCaptureDefault(),
+      connectWebSocket()
+    ])
+
+    const elapsed = Date.now() - startTime
+    log(`Recording ready in ${elapsed}ms`)
+
     if (!audioOk) {
       throw new Error('Audio capture failed')
     }
-
-    // Connect WebSocket next (audio is buffering)
-    const wsOk = await connectWebSocket()
     if (!wsOk) {
       throw new Error('WebSocket connection failed')
     }
@@ -1446,6 +1517,11 @@ app.whenReady().then(async () => {
 
   // Cache audio device at startup for instant recording
   initAudioDevice()
+
+  // Pre-cache WebSocket token for faster recording start
+  setTimeout(() => {
+    preCacheWsToken()
+  }, 1000)  // 1 second after app ready
 
   setupIpcHandlers()
   createWindow(true)
