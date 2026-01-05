@@ -136,9 +136,17 @@ class StreamingTranscriber:
                 tmp_path = tmp_file.name
 
             try:
+                # Clear CUDA cache before transcription to prevent memory fragmentation
+                if DEVICE == "cuda":
+                    torch.cuda.empty_cache()
+
                 with torch.inference_mode():
                     with torch.cuda.amp.autocast(enabled=(DEVICE == "cuda")):
                         output = self.model.transcribe([tmp_path], batch_size=1, verbose=False)
+
+                # Ensure CUDA operations complete before accessing results
+                if DEVICE == "cuda":
+                    torch.cuda.synchronize()
 
                 if output and len(output) > 0:
                     text = self._extract_text(output[0])
@@ -234,6 +242,10 @@ class StreamingTranscriber:
                         tmp_path = tmp_file.name
 
                     try:
+                        # Clear CUDA cache before each chunk
+                        if DEVICE == "cuda":
+                            torch.cuda.empty_cache()
+
                         with torch.inference_mode():
                             with torch.cuda.amp.autocast(enabled=(DEVICE == "cuda")):
                                 # Freeze encoder to prevent NeMo's unfreeze error
@@ -252,6 +264,10 @@ class StreamingTranscriber:
                                         output = []
                                     else:
                                         raise
+
+                        # Ensure CUDA operations complete
+                        if DEVICE == "cuda":
+                            torch.cuda.synchronize()
 
                         if output and len(output) > 0:
                             chunk_text = self._extract_text(output[0])
@@ -273,6 +289,10 @@ class StreamingTranscriber:
                 tmp_path = tmp_file.name
 
             try:
+                # Clear CUDA cache before transcription
+                if DEVICE == "cuda":
+                    torch.cuda.empty_cache()
+
                 with torch.inference_mode():
                     with torch.cuda.amp.autocast(enabled=(DEVICE == "cuda")):
                         # Freeze encoder to prevent NeMo's unfreeze error
@@ -291,6 +311,10 @@ class StreamingTranscriber:
                                 output = []
                             else:
                                 raise
+
+                # Ensure CUDA operations complete
+                if DEVICE == "cuda":
+                    torch.cuda.synchronize()
 
                 _ms = (_time.perf_counter() - _t0) * 1000
                 if output and len(output) > 0:
