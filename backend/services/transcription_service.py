@@ -387,8 +387,13 @@ class TranscriptionService:
                 map_location=DEVICE
             )
             if DEVICE == "cuda":
-                # Use .float() or .half() for proper recursive conversion
-                # This is more robust than .to(dtype) for NeMo models
+                # 1. Force internal config to FP32 to prevent auto-revert
+                if hasattr(model, 'cfg') and hasattr(model.cfg, 'precision'):
+                    model.cfg.precision = 32 if MODEL_PRECISION == "fp32" else 16
+                    print(f"[PARAKEET] Set model.cfg.precision = {model.cfg.precision}")
+
+                # 2. Aggressive In-Place Cast (Recursive)
+                # .float() is stronger than .to(dtype=...) for complex NeMo models
                 if MODEL_PRECISION == "fp32":
                     model = model.float()  # Recursively convert all params to FP32
                 else:
@@ -396,17 +401,29 @@ class TranscriptionService:
 
                 model = model.cuda()
 
-                # Verify actual dtype (check encoder - holds bulk of weights)
+                # 3. HARD Verification (Check actual weights in encoder)
+                # Encoder holds 90% of parameters
                 if hasattr(model, 'encoder'):
-                    param = next(model.encoder.parameters())
-                    print(f"[PARAKEET] Encoder Dtype: {param.dtype}")
+                    sample_weight = next(model.encoder.parameters())
                 else:
-                    param = next(model.parameters())
-                    print(f"[PARAKEET] Model Dtype: {param.dtype}")
+                    sample_weight = next(model.parameters())
 
-                # Check VRAM allocation directly via torch
-                allocated_gb = torch.cuda.memory_allocated(0) / 1024**3
-                print(f"[PARAKEET] VRAM (torch): {allocated_gb:.2f} GB")
+                expected_dtype = torch.float32 if MODEL_PRECISION == "fp32" else torch.float16
+
+                print(f"[PARAKEET] ------------------------------------------------")
+                print(f"[PARAKEET] Verification - Weight Dtype: {sample_weight.dtype}")
+                print(f"[PARAKEET] Verification - Expected:     {expected_dtype}")
+                print(f"[PARAKEET] ------------------------------------------------")
+
+                # 4. Final VRAM Check
+                vram_gb = torch.cuda.memory_allocated(0) / 1024**3
+                target = ">3.5GB" if MODEL_PRECISION == "fp32" else "~2.3GB"
+                print(f"[PARAKEET] Real VRAM Usage: {vram_gb:.2f} GB (Target: {target})")
+
+                # 5. Fail hard if conversion didn't work
+                if sample_weight.dtype != expected_dtype:
+                    raise RuntimeError(f"CRITICAL: Model failed to convert to {MODEL_PRECISION.upper()}! "
+                                     f"Got {sample_weight.dtype} instead of {expected_dtype}")
 
                 # Disable CUDA graphs to prevent crashes on long recordings (like Wispr Flow)
                 # Trade: Slightly slower inference, but stable for 10-15min recordings
