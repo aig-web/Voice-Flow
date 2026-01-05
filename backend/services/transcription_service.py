@@ -382,23 +382,31 @@ class TranscriptionService:
             torch.cuda.reset_peak_memory_stats()
 
         with torch.inference_mode():
-            dtype = torch.float16 if MODEL_PRECISION == "fp16" else torch.float32
             model = nemo_asr.models.ASRModel.from_pretrained(
                 PARAKEET_MODEL_NAME,
                 map_location=DEVICE
             )
             if DEVICE == "cuda":
-                model = model.to(dtype=dtype)
+                # Use .float() or .half() for proper recursive conversion
+                # This is more robust than .to(dtype) for NeMo models
+                if MODEL_PRECISION == "fp32":
+                    model = model.float()  # Recursively convert all params to FP32
+                else:
+                    model = model.half()   # Recursively convert all params to FP16
 
-                # Verify actual dtype of model parameters
-                sample_param = next(model.parameters())
-                actual_dtype = sample_param.dtype
-                print(f"[PARAKEET] Requested: {dtype}, Actual model dtype: {actual_dtype}")
-                if actual_dtype != dtype:
-                    print(f"[PARAKEET WARNING] Model dtype mismatch! Converting manually...")
-                    model = model.float() if dtype == torch.float32 else model.half()
-                    sample_param = next(model.parameters())
-                    print(f"[PARAKEET] After manual conversion: {sample_param.dtype}")
+                model = model.cuda()
+
+                # Verify actual dtype (check encoder - holds bulk of weights)
+                if hasattr(model, 'encoder'):
+                    param = next(model.encoder.parameters())
+                    print(f"[PARAKEET] Encoder Dtype: {param.dtype}")
+                else:
+                    param = next(model.parameters())
+                    print(f"[PARAKEET] Model Dtype: {param.dtype}")
+
+                # Check VRAM allocation directly via torch
+                allocated_gb = torch.cuda.memory_allocated(0) / 1024**3
+                print(f"[PARAKEET] VRAM (torch): {allocated_gb:.2f} GB")
 
                 # Disable CUDA graphs to prevent crashes on long recordings (like Wispr Flow)
                 # Trade: Slightly slower inference, but stable for 10-15min recordings
