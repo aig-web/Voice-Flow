@@ -141,7 +141,8 @@ class StreamingTranscriber:
                     torch.cuda.empty_cache()
 
                 with torch.inference_mode():
-                    with torch.cuda.amp.autocast(enabled=(DEVICE == "cuda")):
+                    # DISABLE autocast - causes CUDA illegal memory access on T4 GPUs
+                    with torch.cuda.amp.autocast(enabled=False):
                         output = self.model.transcribe([tmp_path], batch_size=1, verbose=False)
 
                 # Ensure CUDA operations complete before accessing results
@@ -247,7 +248,8 @@ class StreamingTranscriber:
                             torch.cuda.empty_cache()
 
                         with torch.inference_mode():
-                            with torch.cuda.amp.autocast(enabled=(DEVICE == "cuda")):
+                            # DISABLE autocast - causes CUDA illegal memory access on T4 GPUs
+                            with torch.cuda.amp.autocast(enabled=False):
                                 # Freeze encoder to prevent NeMo's unfreeze error
                                 try:
                                     if hasattr(self.model, 'encoder'):
@@ -294,7 +296,8 @@ class StreamingTranscriber:
                     torch.cuda.empty_cache()
 
                 with torch.inference_mode():
-                    with torch.cuda.amp.autocast(enabled=(DEVICE == "cuda")):
+                    # DISABLE autocast - causes CUDA illegal memory access on T4 GPUs
+                    with torch.cuda.amp.autocast(enabled=False):
                         # Freeze encoder to prevent NeMo's unfreeze error
                         try:
                             if hasattr(self.model, 'encoder'):
