@@ -23,23 +23,39 @@ function App() {
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [userProfile, setUserProfile] = useState<UserProfile>({ name: 'User', email: '', avatar: 'default' })
 
-  // Check if onboarding should be shown and load user profile
+  // Check if onboarding should be shown and load user profile from backend
   useEffect(() => {
-    const onboardingComplete = localStorage.getItem('vf-onboarding-complete')
-    if (!onboardingComplete) {
-      setShowOnboarding(true)
-    }
-
-    // Load user profile
-    const savedProfile = localStorage.getItem('st-user-profile')
-    if (savedProfile) {
+    const checkOnboarding = async () => {
       try {
-        const profile = JSON.parse(savedProfile)
-        setUserProfile(profile)
-      } catch (e) {
-        console.error('Error parsing user profile:', e)
+        const result = await window.voiceFlow.getSettings()
+        if (result.ok && result.data) {
+          const settings = result.data
+
+          // Check if onboarding is complete from backend
+          if (!settings.onboarding_complete) {
+            setShowOnboarding(true)
+          }
+
+          // Load user profile from backend settings
+          if (settings.user_name && settings.user_email) {
+            setUserProfile({
+              name: settings.user_name || 'User',
+              email: settings.user_email || '',
+              avatar: settings.user_avatar || 'default'
+            })
+          }
+        } else {
+          // No settings found, show onboarding
+          setShowOnboarding(true)
+        }
+      } catch (error) {
+        console.error('Error checking onboarding:', error)
+        // On error, show onboarding to be safe
+        setShowOnboarding(true)
       }
     }
+
+    checkOnboarding()
   }, [])
 
   // Detect platform for hotkey display

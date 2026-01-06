@@ -47,6 +47,7 @@ export async function injectTextWindows(text: string): Promise<InjectResult> {
 
     // Wait longer for user to fully release hotkey (Ctrl+Alt) before we send Ctrl+V
     // This prevents key collision where user's held Ctrl interferes with our paste
+    // INCREASED DELAY: Give user time to switch to target window
     setTimeout(() => {
       // SECURITY FIX: Use Base64 encoding to prevent command injection
       // Previously used string escaping which was vulnerable to injection attacks
@@ -106,6 +107,6 @@ $wsh.SendKeys('^v')
         resolve({ ok: false, error: 'Injection timed out' })
       }, 10000)
 
-    }, 50) // 50ms delay - minimal wait for hotkey release
+    }, 300) // 300ms delay - gives time for window focus + hotkey release
   })
 }

@@ -101,8 +101,8 @@ nsis:
     !addincludedir "E:\Yash\PROJECTS\Voice-flow\windows\app\build"
     !include "E:\Yash\PROJECTS\Voice-flow\windows\app\build\installer.nsh"
     !addplugindir /x86-unicode "C:\Users\suhan\AppData\Local\electron-builder\Cache\nsis\nsis-resources-3.4.1\plugins\x86-unicode"
-    !include "C:\Users\suhan\AppData\Local\Temp\t-l2LyMo\0-messages.nsh"
-    !include "C:\Users\suhan\AppData\Local\Temp\t-l2LyMo\1-messages.nsh"
+    !include "C:\Users\suhan\AppData\Local\Temp\t-IP4suo\0-messages.nsh"
+    !include "C:\Users\suhan\AppData\Local\Temp\t-IP4suo\1-messages.nsh"
 
     Var newStartMenuLink
     Var oldStartMenuLink

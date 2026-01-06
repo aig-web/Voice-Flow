@@ -35,7 +35,7 @@ import WebSocket from 'ws'
 
 // ============== CONFIG ==============
 const DEV_URL = 'http://localhost:5173'
-const API_BASE_URL = process.env.VITE_API_URL || 'https://ilona-decipherable-stupidly.ngrok-free.dev'
+const API_BASE_URL = process.env.VITE_API_URL || 'http://127.0.0.1:8001'
 const WS_URL = API_BASE_URL.replace('https://', 'wss://').replace('http://', 'ws://')
 const SAMPLE_RATE = 16000
 
@@ -1064,7 +1064,7 @@ function createWindow(showImmediately = false) {
     minWidth: 600,
     minHeight: 500,
     center: true,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#ffffff',
     show: false,
     skipTaskbar: !showImmediately,
     webPreferences: {
@@ -1356,10 +1356,37 @@ function setupIpcHandlers() {
     }
   })
 
-  // Get stats from local DB (temporarily disabled for dev)
+  // Get stats from backend API
   ipcMain.handle('vf:get-stats', async () => {
-    // Database disabled for dev - return empty stats
-    return { total_transcriptions: 0, total_duration: 0, avg_duration: 0, wordsCaptured: 0, timeSavedMinutes: 0 }
+    try {
+      console.log('[STATS-DEBUG] Calling backend API /api/stats...')
+      const apiData = await fetchFromBackend('/api/stats') as any
+      console.log('[STATS-DEBUG] Backend API returned:', JSON.stringify(apiData))
+
+      // Backend returns: totalTranscriptions, wordsCaptured, timeSavedMinutes
+      const result = {
+        ok: true,
+        data: {
+          totalTranscriptions: apiData.totalTranscriptions || 0,
+          wordsCaptured: apiData.wordsCaptured || 0,
+          timeSavedMinutes: apiData.timeSavedMinutes || 0
+        }
+      }
+
+      console.log('[STATS-DEBUG] Returning to frontend:', JSON.stringify(result))
+      return result
+    } catch (error) {
+      console.error('[STATS-DEBUG] Error fetching stats:', error)
+      log('Failed to fetch stats:', error)
+      return {
+        ok: false,
+        data: {
+          totalTranscriptions: 0,
+          wordsCaptured: 0,
+          timeSavedMinutes: 0
+        }
+      }
+    }
   })
 
   // Toast controls

@@ -425,13 +425,17 @@ async def get_active_sessions():
 
 
 @router.get("/api/transcriptions")
-async def get_transcriptions(limit: int = 50):
-    """Get all transcriptions, newest first"""
+async def get_transcriptions(limit: int = 10000):
+    """Get all transcriptions, newest first (default limit: 10000)"""
     try:
         with SessionLocal() as db:
-            transcriptions = db.query(Transcription).order_by(
-                Transcription.created_at.desc()
-            ).limit(limit).all()
+            query = db.query(Transcription).order_by(Transcription.created_at.desc())
+
+            # Apply limit if provided (0 or negative means no limit)
+            if limit > 0:
+                query = query.limit(limit)
+
+            transcriptions = query.all()
             return [t.to_dict() for t in transcriptions]
     except Exception as e:
         print(f"[ERROR] Error fetching transcriptions: {e}")

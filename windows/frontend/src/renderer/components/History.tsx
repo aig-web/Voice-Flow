@@ -31,7 +31,7 @@ export function History() {
 
   const fetchTranscriptions = async () => {
     try {
-      const result = await window.voiceFlow.getHistory(50)
+      const result = await window.voiceFlow.getHistory(10000)  // Get up to 10000 transcriptions
       if (result.ok && result.data) {
         setTranscriptions(result.data)
       }

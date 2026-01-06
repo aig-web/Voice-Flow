@@ -26,14 +26,14 @@ html.dark,
   --primary-dark: #FFB84C;
   --primary-hover: #FFE066;
   --primary-content: #1A1A1A;
-  --background-light: #0D0D0D;
-  --surface-light: #161616;
-  --surface-hover: #1F1F1F;
-  --surface-active: #2A2A2A;
-  --text-main: #FAFAFA;
-  --text-muted: #A1A1AA;
-  --text-body: #D4D4D8;
-  --border-light: #27272A;
+  --background-light: #1A1A1A;
+  --surface-light: #242424;
+  --surface-hover: #2E2E2E;
+  --surface-active: #383838;
+  --text-main: #FFFFFF;
+  --text-muted: #B0B0B0;
+  --text-body: #D0D0D0;
+  --border-light: #3A3A3A;
 }
 
 /* Ensure dark mode inherits to all descendants */
@@ -60,7 +60,9 @@ html, body {
 /* Toast window - transparent background */
 html.toast-window,
 html.toast-window body,
-body.toast-window {
+body.toast-window,
+html.toast-window #root,
+#root[data-toast="true"] {
   background: transparent !important;
 }
 

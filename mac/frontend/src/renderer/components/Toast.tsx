@@ -128,7 +128,7 @@ export function ToastWindow() {
   if (!visible) return null
 
   return (
-    <div className="w-full h-full flex items-center justify-center p-4">
+    <div className="w-full h-full flex items-center justify-center p-4" style={{ background: 'transparent' }}>
       {/* Recording - Different UI for hold vs lock mode */}
       {type === 'recording' && (
         <div className="flex flex-col items-center gap-3 max-w-lg w-full">

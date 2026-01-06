@@ -89,21 +89,28 @@ export function Dashboard() {
       setError(null)
 
       // Fetch history and stats from main process via voiceFlow API
+      console.log('[DASHBOARD-DEBUG] Fetching history and stats...')
       const [historyResult, statsResult] = await Promise.all([
-        window.voiceFlow.getHistory(50),
+        window.voiceFlow.getHistory(10000),  // Get up to 10000 recent transcriptions
         window.voiceFlow.getStats()
       ])
+
+      console.log('[DASHBOARD-DEBUG] History result:', historyResult)
+      console.log('[DASHBOARD-DEBUG] Stats result:', JSON.stringify(statsResult))
 
       if (historyResult.ok && Array.isArray(historyResult.data)) {
         setTranscriptions(historyResult.data)
       }
 
       if (statsResult.ok && statsResult.data) {
+        console.log('[DASHBOARD-DEBUG] Setting stats state:', statsResult.data)
         setStats({
           totalTranscriptions: statsResult.data.totalTranscriptions || 0,
           wordsCaptured: statsResult.data.wordsCaptured || 0,
           timeSavedMinutes: statsResult.data.timeSavedMinutes || 0
         })
+      } else {
+        console.log('[DASHBOARD-DEBUG] Stats result not ok or no data:', statsResult)
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load transcriptions'

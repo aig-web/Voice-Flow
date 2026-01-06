@@ -170,10 +170,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   const handleComplete = async () => {
     setIsLoading(true)
     try {
-      // Save user profile to localStorage
-      localStorage.setItem('st-user-profile', JSON.stringify(profile))
-
-      // Save settings
+      // Save all settings including user profile and onboarding completion to backend
       await fetch(`${API_BASE_URL}/api/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -181,7 +178,11 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
           tone: 'formal',
           personal_dictionary: {},
           record_hotkey: hotkey,
-          language
+          language,
+          onboarding_complete: true,
+          user_name: profile.name,
+          user_email: profile.email,
+          user_avatar: profile.avatar
         })
       })
 
@@ -190,8 +191,10 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
         await window.voiceFlow.updateHotkey(hotkey)
       }
 
-      // Mark onboarding as complete
+      // Also save to localStorage as backup (in case backend is down next time)
       localStorage.setItem('vf-onboarding-complete', 'true')
+      localStorage.setItem('st-user-profile', JSON.stringify(profile))
+
       onComplete()
     } catch (error) {
       console.error('Error saving onboarding settings:', error)

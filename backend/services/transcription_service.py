@@ -259,11 +259,22 @@ class StreamingTranscriber:
 
                                 try:
                                     output = self.model.transcribe([tmp_path], batch_size=1, verbose=False)
-                                except ValueError as e:
-                                    # Handle NeMo's unfreeze bug gracefully
-                                    if "Cannot unfreeze" in str(e):
-                                        print(f"[FINAL] NeMo unfreeze error (ignoring, non-critical)")
-                                        output = []
+                                except (ValueError, RuntimeError) as e:
+                                    # Handle NeMo's unfreeze bug and CUDA graph errors gracefully
+                                    if "Cannot unfreeze" in str(e) or "CUDAGraph" in str(e) or "CUDA graph" in str(e):
+                                        error_type = "unfreeze" if "Cannot unfreeze" in str(e) else "CUDA graph"
+                                        print(f"[FINAL] NeMo {error_type} error (retrying with fresh model state...)")
+                                        # Clear CUDA cache and retry
+                                        if DEVICE == "cuda":
+                                            torch.cuda.empty_cache()
+                                            torch.cuda.synchronize()
+                                        # Retry transcription
+                                        try:
+                                            output = self.model.transcribe([tmp_path], batch_size=1, verbose=False)
+                                            print(f"[FINAL] Retry succeeded after {error_type} error")
+                                        except Exception as retry_err:
+                                            print(f"[FINAL] Retry failed: {retry_err}, returning empty")
+                                            output = []
                                     else:
                                         raise
 
@@ -307,11 +318,22 @@ class StreamingTranscriber:
 
                         try:
                             output = self.model.transcribe([tmp_path], batch_size=1, verbose=False)
-                        except ValueError as e:
-                            # Handle NeMo's unfreeze bug gracefully
-                            if "Cannot unfreeze" in str(e):
-                                print(f"[FINAL] NeMo unfreeze error (ignoring, non-critical)")
-                                output = []
+                        except (ValueError, RuntimeError) as e:
+                            # Handle NeMo's unfreeze bug and CUDA graph errors gracefully
+                            if "Cannot unfreeze" in str(e) or "CUDAGraph" in str(e) or "CUDA graph" in str(e):
+                                error_type = "unfreeze" if "Cannot unfreeze" in str(e) else "CUDA graph"
+                                print(f"[FINAL] NeMo {error_type} error (retrying with fresh model state...)")
+                                # Clear CUDA cache and retry
+                                if DEVICE == "cuda":
+                                    torch.cuda.empty_cache()
+                                    torch.cuda.synchronize()
+                                # Retry transcription
+                                try:
+                                    output = self.model.transcribe([tmp_path], batch_size=1, verbose=False)
+                                    print(f"[FINAL] Retry succeeded after {error_type} error")
+                                except Exception as retry_err:
+                                    print(f"[FINAL] Retry failed: {retry_err}, returning empty")
+                                    output = []
                             else:
                                 raise
 

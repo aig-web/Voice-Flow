@@ -37,7 +37,7 @@ import WebSocket from 'ws'
 
 // ============== CONFIG ==============
 const DEV_URL = 'http://localhost:5173'
-const API_BASE_URL = process.env.VITE_API_URL || 'https://ilona-decipherable-stupidly.ngrok-free.dev'
+const API_BASE_URL = process.env.VITE_API_URL || 'http://127.0.0.1:8001'
 const WS_URL = API_BASE_URL.replace('https://', 'wss://').replace('http://', 'ws://')
 const SAMPLE_RATE = 16000
 
@@ -798,7 +798,7 @@ function createWindow(showImmediately = false) {
     minWidth: 600,
     minHeight: 500,
     center: true,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#ffffff',
     show: false,
     skipTaskbar: !showImmediately,
     titleBarStyle: 'hiddenInset',  // macOS native title bar

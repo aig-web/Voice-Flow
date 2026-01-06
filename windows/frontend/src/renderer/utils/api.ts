@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8001'
 
 export interface TranscriptionResponse {
   transcription: string
@@ -78,9 +78,9 @@ export async function testBackendConnection(): Promise<boolean> {
 
 /**
  * Get transcriptions from local database via IPC
- * @param limit - Number of transcriptions to retrieve (default: 50)
+ * @param limit - Number of transcriptions to retrieve (default: 10000)
  */
-export async function getTranscriptions(limit = 50) {
+export async function getTranscriptions(limit = 10000) {
   return await window.electron.ipcRenderer.invoke('vf:get-transcriptions', limit)
 }
 

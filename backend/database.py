@@ -44,7 +44,7 @@ class Transcription(Base):
     raw_text = Column(Text, nullable=False)
     polished_text = Column(Text, nullable=False)
     duration = Column(Float, default=0.0)  # seconds
-    created_at = Column(DateTime, default=lambda: datetime.utcnow())
+    created_at = Column(DateTime, default=lambda: datetime.now())  # Local time instead of UTC
 
     # Audio storage for reprocessing (optional)
     audio_data = Column(LargeBinary, nullable=True)
@@ -76,8 +76,12 @@ class UserSettings(Base):
     personal_dictionary = Column(JSON, default={})  # {"mishearing": "correction"}
     record_hotkey = Column(String, default="Ctrl+Alt")  # Global hotkey for recording (hold to record)
     language = Column(String, default="en")  # Language code: en, es, fr, de, etc.
-    created_at = Column(DateTime, default=lambda: datetime.utcnow())
-    updated_at = Column(DateTime, default=lambda: datetime.utcnow(), onupdate=lambda: datetime.utcnow())
+    onboarding_complete = Column(Boolean, default=False)  # Onboarding wizard completion status
+    user_name = Column(String, default="")  # User's name from onboarding
+    user_email = Column(String, default="")  # User's email from onboarding
+    user_avatar = Column(String, default="default")  # Avatar color choice
+    created_at = Column(DateTime, default=lambda: datetime.now())
+    updated_at = Column(DateTime, default=lambda: datetime.now(), onupdate=lambda: datetime.now())
 
     def to_dict(self):
         return {
@@ -87,6 +91,10 @@ class UserSettings(Base):
             "personal_dictionary": self.personal_dictionary or {},
             "record_hotkey": self.record_hotkey or "Ctrl+Alt",
             "language": self.language or "en",
+            "onboarding_complete": self.onboarding_complete or False,
+            "user_name": self.user_name or "",
+            "user_email": self.user_email or "",
+            "user_avatar": self.user_avatar or "default",
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }
@@ -124,8 +132,8 @@ class Mode(Base):
     sort_order = Column(Integer, default=0)
     is_default = Column(Boolean, default=False)
 
-    created_at = Column(DateTime, default=lambda: datetime.utcnow())
-    updated_at = Column(DateTime, onupdate=lambda: datetime.utcnow())
+    created_at = Column(DateTime, default=lambda: datetime.now())
+    updated_at = Column(DateTime, onupdate=lambda: datetime.now())
 
     __table_args__ = (
         UniqueConstraint('user_id', 'name', name='unique_mode_per_user'),
@@ -162,8 +170,8 @@ class Snippet(Base):
     trigger = Column(String, nullable=False)  # "my email", "my address"
     content = Column(Text, nullable=False)    # "john@example.com", "123 Main St..."
     use_count = Column(Integer, default=0)
-    created_at = Column(DateTime, default=lambda: datetime.utcnow())
-    updated_at = Column(DateTime, default=lambda: datetime.utcnow(), onupdate=lambda: datetime.utcnow())
+    created_at = Column(DateTime, default=lambda: datetime.now())
+    updated_at = Column(DateTime, default=lambda: datetime.now(), onupdate=lambda: datetime.now())
 
     def to_dict(self):
         return {
