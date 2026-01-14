@@ -37,10 +37,42 @@ def init_db():
     Base.metadata.create_all(bind=engine)
 
 
+class User(Base):
+    """User accounts from Firebase Authentication"""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    firebase_uid = Column(String, unique=True, nullable=False, index=True)  # Firebase UID
+    email = Column(String, unique=True, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    photo_url = Column(String, nullable=True)
+
+    # Subscription/billing
+    is_active = Column(Boolean, default=True)
+    is_premium = Column(Boolean, default=False)
+
+    created_at = Column(DateTime, default=lambda: datetime.now())
+    last_login = Column(DateTime, default=lambda: datetime.now())
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "firebase_uid": self.firebase_uid,
+            "email": self.email,
+            "name": self.name,
+            "photo_url": self.photo_url,
+            "is_active": self.is_active,
+            "is_premium": self.is_premium,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "last_login": self.last_login.isoformat() if self.last_login else None
+        }
+
+
 class Transcription(Base):
     __tablename__ = "transcriptions"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)  # Link to User table
     raw_text = Column(Text, nullable=False)
     polished_text = Column(Text, nullable=False)
     duration = Column(Float, default=0.0)  # seconds
@@ -71,7 +103,7 @@ class UserSettings(Base):
     __tablename__ = "user_settings"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, default="default", unique=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, unique=True, index=True)  # Link to User table
     tone = Column(String, default="formal")  # formal, casual, technical
     personal_dictionary = Column(JSON, default={})  # {"mishearing": "correction"}
     record_hotkey = Column(String, default="Ctrl+Alt")  # Global hotkey for recording (hold to record)
@@ -105,7 +137,7 @@ class Mode(Base):
     __tablename__ = "modes"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, default="default", index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)  # Link to User table
     name = Column(String(100), nullable=False)
     description = Column(String(500))
 
@@ -166,7 +198,7 @@ class Snippet(Base):
     __tablename__ = "snippets"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, default="default", index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)  # Link to User table
     trigger = Column(String, nullable=False)  # "my email", "my address"
     content = Column(Text, nullable=False)    # "john@example.com", "123 Main St..."
     use_count = Column(Integer, default=0)

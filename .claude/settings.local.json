@@ -55,7 +55,9 @@
       "Bash(venv/Scripts/python.exe:*)",
       "Bash(powershell.exe -ExecutionPolicy Bypass -File .build.ps1)",
       "Bash(powershell.exe -ExecutionPolicy Bypass -File ./build.ps1)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(.log:*)",
+      "Bash(.txt:*)"
     ]
   }
 }

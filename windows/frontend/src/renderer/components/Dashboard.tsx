@@ -17,7 +17,11 @@ interface Stats {
   timeSavedMinutes: number
 }
 
-export function Dashboard() {
+interface DashboardProps {
+  onViewAll?: () => void
+}
+
+export function Dashboard({ onViewAll }: DashboardProps = {}) {
   const [transcriptions, setTranscriptions] = useState<Transcription[]>([])
   const [stats, setStats] = useState<Stats>({ totalTranscriptions: 0, wordsCaptured: 0, timeSavedMinutes: 0 })
   const [loading, setLoading] = useState(true)
@@ -328,7 +332,10 @@ export function Dashboard() {
         <div className="flex items-center justify-between mb-2 flex-shrink-0">
           <h2 className="text-lg font-bold text-text-main">Recent Activity</h2>
           {transcriptions.length > 3 && (
-            <button className="text-primary-dark hover:text-primary font-medium text-sm">
+            <button
+              onClick={onViewAll}
+              className="text-primary-dark hover:text-primary font-medium text-sm transition-colors"
+            >
               View All
             </button>
           )}

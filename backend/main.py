@@ -45,6 +45,7 @@ from routers.export import router as export_router
 
 # Import services
 from services.transcription_service import transcription_service, DEVICE
+from services.firebase_auth import initialize_firebase
 from database import init_db
 
 
@@ -65,6 +66,12 @@ async def lifespan(app: FastAPI):
         print("[OK] Database initialized")
     except Exception as e:
         print(f"[ERROR] Failed to initialize database: {e}")
+
+    # Initialize Firebase Authentication
+    try:
+        initialize_firebase()
+    except Exception as e:
+        print(f"[WARN] Firebase initialization skipped: {e}")
 
     # Load ASR model
     try:

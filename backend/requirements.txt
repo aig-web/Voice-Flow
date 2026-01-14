@@ -15,6 +15,9 @@ pydantic-settings==2.7.0
 # Environment
 python-dotenv==1.0.1
 
+# Firebase Authentication
+firebase-admin==6.5.0
+
 # PDF/CSV export
 reportlab==4.2.5
 

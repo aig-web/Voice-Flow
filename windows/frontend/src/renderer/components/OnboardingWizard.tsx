@@ -30,12 +30,46 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   const [micPermissionGranted, setMicPermissionGranted] = useState(false)
   const [micPermissionDenied, setMicPermissionDenied] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [showSkipConfirm, setShowSkipConfirm] = useState(false)
   const [profile, setProfile] = useState<UserProfile>({
     name: '',
     email: '',
     avatar: 'default'
   })
   const [emailError, setEmailError] = useState<string>('')
+
+  // Skip onboarding with defaults
+  const handleSkip = async () => {
+    setShowSkipConfirm(false)
+    setIsLoading(true)
+
+    try {
+      // Save minimal settings with defaults
+      await fetch(`${API_BASE_URL}/api/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tone: 'formal',
+          personal_dictionary: {},
+          record_hotkey: isMac ? 'Meta+Alt' : 'Control+Alt',
+          language: DEFAULT_LANGUAGE,
+          onboarding_complete: true,
+          user_name: 'User',
+          user_email: '',
+          user_avatar: 'default'
+        })
+      })
+
+      // Save to localStorage
+      localStorage.setItem('vf-onboarding-complete', 'true')
+      onComplete()
+    } catch (error) {
+      console.error('Error skipping onboarding:', error)
+      onComplete() // Still complete even on error
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   const steps: Step[] = ['welcome', 'profile', 'microphone', 'language', 'hotkey', 'complete']
   const currentIndex = steps.indexOf(currentStep)
@@ -629,6 +663,45 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
 
   return (
     <div className="fixed inset-0 bg-background-light z-50 flex flex-col">
+      {/* Skip button - top right (hidden on complete step) */}
+      {currentStep !== 'complete' && (
+        <div className="absolute top-4 right-4 z-10">
+          <button
+            onClick={() => setShowSkipConfirm(true)}
+            className="px-4 py-2 text-text-muted hover:text-text-main text-sm font-medium transition-colors"
+          >
+            Skip for now
+          </button>
+        </div>
+      )}
+
+      {/* Skip confirmation dialog */}
+      {showSkipConfirm && (
+        <div className="absolute inset-0 bg-black/50 z-20 flex items-center justify-center p-4">
+          <div className="bg-surface-light rounded-2xl p-6 max-w-sm w-full space-y-4 shadow-2xl">
+            <h3 className="text-lg font-bold text-text-main">Skip onboarding?</h3>
+            <p className="text-text-muted text-sm">
+              You can always customize settings later from the Settings page.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowSkipConfirm(false)}
+                className="flex-1 px-4 py-2 border border-border-light rounded-lg text-text-main hover:bg-surface-hover transition-colors"
+              >
+                Continue Setup
+              </button>
+              <button
+                onClick={handleSkip}
+                disabled={isLoading}
+                className="flex-1 px-4 py-2 bg-primary hover:bg-primary-hover text-primary-content rounded-lg font-medium transition-colors disabled:opacity-50"
+              >
+                {isLoading ? 'Skipping...' : 'Skip'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Progress bar - only show after welcome */}
       {currentStep !== 'welcome' && (
         <div className="h-1 bg-surface-hover">

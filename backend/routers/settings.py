@@ -19,6 +19,10 @@ class SettingsRequest(BaseModel):
     personal_dictionary: dict
     record_hotkey: str = "Ctrl+Alt"
     language: str = "en"
+    onboarding_complete: bool = False
+    user_name: str = ""
+    user_email: str = ""
+    user_avatar: str = "default"
 
 
 class DictionaryEntryRequest(BaseModel):
@@ -64,6 +68,10 @@ async def update_settings(request: SettingsRequest):
             settings.personal_dictionary = request.personal_dictionary
             settings.record_hotkey = request.record_hotkey
             settings.language = request.language
+            settings.onboarding_complete = request.onboarding_complete
+            settings.user_name = request.user_name
+            settings.user_email = request.user_email
+            settings.user_avatar = request.user_avatar
 
             db.commit()
 

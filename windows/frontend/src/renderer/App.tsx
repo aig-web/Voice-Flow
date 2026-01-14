@@ -229,7 +229,7 @@ function App() {
 
       {/* Main Content */}
       <main className="flex-1 ml-56 h-screen bg-background-light overflow-y-auto">
-        {activeTab === 'dashboard' && <Dashboard />}
+        {activeTab === 'dashboard' && <Dashboard onViewAll={() => setActiveTab('history')} />}
         {activeTab === 'history' && <History />}
         {activeTab === 'dictionary' && <Dictionary />}
         {activeTab === 'snippets' && <Snippets />}
